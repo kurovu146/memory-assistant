@@ -345,26 +345,35 @@ pub async fn glob_search(pattern: &str, path: Option<&str>) -> String {
 
     info!("glob: pattern={pattern}, path={base_dir}");
 
-    // Use find command with -name or -path pattern for glob matching
-    // This is more reliable than implementing glob in pure Rust
-    let cmd = if pattern.contains('/') || pattern.contains("**") {
-        // Path-based pattern: use find with shell glob
-        // Convert ** to find's recursive behavior
-        let find_pattern = pattern.replace("**/", "*/");
-        format!(
-            "find '{}' -type f -name '{}' 2>/dev/null | head -200",
-            base_dir,
-            find_pattern.rsplit('/').next().unwrap_or(&find_pattern)
-        )
+    // Extract the filename pattern (last component)
+    let name_pattern = if pattern.contains('/') || pattern.contains("**") {
+        pattern.replace("**/", "*/")
+            .rsplit('/')
+            .next()
+            .unwrap_or(pattern)
+            .to_string()
     } else {
-        // Simple name pattern
-        format!(
-            "find '{}' -type f -name '{}' 2>/dev/null | head -200",
-            base_dir, pattern
-        )
+        pattern.to_string()
     };
 
-    let output = bash_exec(&cmd, Some(15)).await;
+    // Prune heavy directories that slow down find (especially on macOS)
+    let prune_dirs = [
+        "Library", "node_modules", ".git", ".Trash", ".cache",
+        ".npm", ".cargo/registry", ".rustup", "target/debug",
+        "target/release", ".local/share", "Pictures", "Movies", "Music",
+    ];
+    let prune_expr: String = prune_dirs
+        .iter()
+        .map(|d| format!("-name '{}' -prune", d.split('/').next().unwrap_or(d)))
+        .collect::<Vec<_>>()
+        .join(" -o ");
+
+    let cmd = format!(
+        "find '{}' \\( {} \\) -o -type f -name '{}' -print 2>/dev/null | head -200",
+        base_dir, prune_expr, name_pattern
+    );
+
+    let output = bash_exec(&cmd, Some(30)).await;
 
     if output.is_empty() || output.contains("(no output") {
         return format!("No files matching '{pattern}' found in {base_dir}");
