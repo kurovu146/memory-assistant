@@ -159,7 +159,8 @@ pub async fn file_write(path: &str, content: &str) -> String {
 
 /// List directory contents with basic info (type, size).
 pub async fn file_list(path: &str, recursive: bool) -> String {
-    let dir = if path.is_empty() { "." } else { path };
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/kuro".to_string());
+    let dir = if path.is_empty() { &home } else { path };
     let p = Path::new(dir);
 
     if !p.exists() {
@@ -273,7 +274,8 @@ pub async fn grep_search(
         return "Error: pattern cannot be empty".into();
     }
 
-    let search_dir = path.unwrap_or(".");
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/kuro".to_string());
+    let search_dir = path.unwrap_or(&home);
     let ctx = context_lines.unwrap_or(0);
 
     // Build grep/rg command
@@ -325,7 +327,9 @@ pub async fn glob_search(pattern: &str, path: Option<&str>) -> String {
         return "Error: pattern cannot be empty".into();
     }
 
-    let base_dir = path.unwrap_or(".");
+    // Default to home directory so bot can search the entire user filesystem
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/kuro".to_string());
+    let base_dir = path.unwrap_or(&home);
     let base = Path::new(base_dir);
 
     if !base.exists() {

@@ -134,7 +134,7 @@ impl ToolRegistry {
                 json!({
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Directory path (default: current dir)" },
+                        "path": { "type": "string", "description": "Directory path (default: home directory ~)" },
                         "recursive": { "type": "boolean", "description": "List recursively (default: false, max depth 5)" }
                     }
                 }),
@@ -145,7 +145,7 @@ impl ToolRegistry {
                     "type": "object",
                     "properties": {
                         "pattern": { "type": "string", "description": "Regex pattern to search for" },
-                        "path": { "type": "string", "description": "Directory or file to search in (default: current dir)" },
+                        "path": { "type": "string", "description": "Directory or file to search in (default: home directory ~)" },
                         "include": { "type": "string", "description": "Glob pattern to filter files (e.g. '*.rs', '*.json')" },
                         "context": { "type": "integer", "description": "Lines of context around matches (default: 0)" }
                     },
@@ -158,7 +158,7 @@ impl ToolRegistry {
                     "type": "object",
                     "properties": {
                         "pattern": { "type": "string", "description": "Glob pattern to match files (e.g. '*.json', '*.rs', 'kuro-*')" },
-                        "path": { "type": "string", "description": "Directory to search in (default: current dir)" }
+                        "path": { "type": "string", "description": "Directory to search in (default: home directory ~)" }
                     },
                     "required": ["pattern"]
                 }),
