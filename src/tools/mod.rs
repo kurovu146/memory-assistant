@@ -3,6 +3,7 @@ mod datetime;
 mod knowledge;
 mod entity_extractor;
 mod system;
+pub mod file_extract;
 
 pub use memory::{memory_save, memory_search, memory_list, memory_delete};
 pub use datetime::get_datetime;

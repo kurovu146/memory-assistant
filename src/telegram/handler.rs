@@ -207,7 +207,7 @@ async fn handle_document(
     let file_name = doc.file_name.as_deref().unwrap_or("unknown");
     let mime = doc.mime_type.as_ref().map(|m| m.to_string()).unwrap_or_default();
 
-    // Only handle text-based files and images
+    // Categorize file type
     let is_text = mime.starts_with("text/")
         || mime.contains("json")
         || mime.contains("xml")
@@ -236,10 +236,19 @@ async fn handle_document(
 
     let is_image = mime.starts_with("image/");
 
-    if !is_text && !is_image {
+    let is_document = file_name.ends_with(".pdf")
+        || file_name.ends_with(".docx")
+        || file_name.ends_with(".xlsx")
+        || file_name.ends_with(".xls")
+        || file_name.ends_with(".doc")
+        || mime.contains("pdf")
+        || mime.contains("wordprocessingml")
+        || mime.contains("spreadsheetml");
+
+    if !is_text && !is_image && !is_document {
         bot.send_message(
             msg.chat.id,
-            &format!("Unsupported file type: {mime}\nSupported: text files, code, images"),
+            &format!("Unsupported file type: {mime}\nSupported: text, code, images, PDF, DOCX, XLSX"),
         ).await?;
         return Ok(());
     }
@@ -281,6 +290,37 @@ async fn handle_document(
             image_base64,
             media_type,
         };
+        return run_agent_and_respond(msg, bot, state, user_id, &history_text, content).await;
+    }
+
+    // Handle document files (PDF, DOCX, XLSX)
+    if is_document {
+        use crate::tools::file_extract;
+
+        info!("Document received: {file_name}, {} bytes, {mime}", file_bytes.len());
+
+        let extracted = file_extract::extract_document(file_name, &file_bytes);
+        let file_content = match extracted {
+            Ok(text) => text,
+            Err(e) => {
+                bot.send_message(msg.chat.id, &format!("Could not extract text from {file_name}: {e}")).await?;
+                return Ok(());
+            }
+        };
+
+        // Truncate large documents
+        let truncated = if file_content.len() > 15000 {
+            format!("{}...\n\n(truncated, {} chars total)", &file_content[..15000], file_content.len())
+        } else {
+            file_content
+        };
+
+        info!("Document extracted: {file_name}, {} chars", truncated.len());
+
+        let prompt = format!("File: {file_name}\n\n```\n{truncated}\n```\n\n{caption}");
+        let history_text = format!("[File: {file_name}] {caption}");
+        let content = MessageContent::Text(prompt);
+
         return run_agent_and_respond(msg, bot, state, user_id, &history_text, content).await;
     }
 
@@ -480,7 +520,8 @@ async fn handle_command(
                  Supported input:\n\
                  - Text messages\n\
                  - Photos (with optional caption)\n\
-                 - Files (text, code, images)\n\n\
+                 - Files: text, code, images\n\
+                 - Documents: PDF, DOCX, XLSX\n\n\
                  System tools:\n\
                  - bash, file_read, file_write\n\
                  - file_list, grep, glob",
