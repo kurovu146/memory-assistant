@@ -45,7 +45,8 @@ impl ProviderPool {
         }
     }
 
-    /// Send a chat request, trying all keys with rotation
+    /// Send a chat request, trying all keys with rotation.
+    /// If all keys are rate-limited, waits and retries up to 3 times.
     pub async fn chat(
         &self,
         messages: &[Message],
@@ -56,29 +57,42 @@ impl ProviderPool {
             return Err(ProviderError::NoKeys);
         }
 
-        for _attempt in 0..num_keys {
-            let key = match self.keys.next_key() {
-                Some(k) => k,
-                None => break,
-            };
+        // Retry with backoff when all keys are rate-limited
+        let max_retries = 3;
+        let retry_delays = [15, 30, 60]; // seconds
 
-            info!("Trying Claude (key: {}...)", &key[..key.len().min(10)]);
-            match self.provider.chat(messages, tools, key).await {
-                Ok(response) => {
-                    info!("Claude succeeded");
-                    return Ok((response, "claude".to_string()));
+        for retry in 0..=max_retries {
+            for _attempt in 0..num_keys {
+                let key = match self.keys.next_key() {
+                    Some(k) => k,
+                    None => break,
+                };
+
+                info!("Trying Claude (key: {}...)", &key[..key.len().min(10)]);
+                match self.provider.chat(messages, tools, key).await {
+                    Ok(response) => {
+                        info!("Claude succeeded");
+                        return Ok((response, "claude".to_string()));
+                    }
+                    Err(ProviderError::RateLimited) => {
+                        warn!("Claude RATE LIMITED (key: {}...), trying next key", &key[..key.len().min(10)]);
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!("Claude FAILED (key: {}...): {e}", &key[..key.len().min(10)]);
+                        return Err(e);
+                    }
                 }
-                Err(ProviderError::RateLimited) => {
-                    warn!("Claude RATE LIMITED (key: {}...), trying next key", &key[..key.len().min(10)]);
-                    continue;
-                }
-                Err(e) => {
-                    warn!("Claude FAILED (key: {}...): {e}", &key[..key.len().min(10)]);
-                    return Err(e);
-                }
+            }
+
+            // All keys exhausted — retry after delay
+            if retry < max_retries {
+                let delay = retry_delays[retry];
+                warn!("All keys rate-limited, waiting {delay}s before retry {}/{}...", retry + 1, max_retries);
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
             }
         }
 
-        Err(ProviderError::RequestError("All Claude keys exhausted".into()))
+        Err(ProviderError::RequestError("All Claude keys exhausted after retries".into()))
     }
 }
