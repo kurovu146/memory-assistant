@@ -32,7 +32,12 @@ impl ClaudeProvider {
         });
 
         if !system_prompt.is_empty() {
-            body["system"] = json!(system_prompt);
+            // Use content blocks with cache_control for prompt caching
+            body["system"] = json!([{
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": { "type": "ephemeral" }
+            }]);
         }
 
         if !tools.is_empty() {
@@ -46,6 +51,7 @@ impl ClaudeProvider {
             .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
+            .header("anthropic-beta", "prompt-caching-2024-07-31")
             .header("content-type", "application/json")
             .json(&body)
             .send()
@@ -194,14 +200,21 @@ fn build_claude_messages(messages: &[Message]) -> (String, Vec<serde_json::Value
 /// Convert our generic ToolDef format to Claude tool format.
 /// Claude uses { name, description, input_schema } instead of OpenAI's { type: "function", function: { ... } }
 fn build_claude_tools(tools: &[ToolDef]) -> serde_json::Value {
+    let len = tools.len();
     let claude_tools: Vec<serde_json::Value> = tools
         .iter()
-        .map(|t| {
-            json!({
+        .enumerate()
+        .map(|(i, t)| {
+            let mut tool = json!({
                 "name": t.function.name,
                 "description": t.function.description,
                 "input_schema": t.function.parameters,
-            })
+            });
+            // Cache control on last tool — caches system + all tools together
+            if i == len - 1 {
+                tool["cache_control"] = json!({ "type": "ephemeral" });
+            }
+            tool
         })
         .collect();
 
@@ -253,6 +266,8 @@ async fn parse_claude_response(resp: reqwest::Response) -> Result<LlmResponse, P
     let usage = Usage {
         prompt_tokens: body["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32,
         completion_tokens: body["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32,
+        cache_creation_tokens: body["usage"]["cache_creation_input_tokens"].as_u64().unwrap_or(0) as u32,
+        cache_read_tokens: body["usage"]["cache_read_input_tokens"].as_u64().unwrap_or(0) as u32,
     };
 
     Ok(LlmResponse {

@@ -69,11 +69,13 @@ impl AgentLoop {
             if response.tool_calls.is_empty() {
                 let content = response.content.unwrap_or_default();
                 info!(
-                    "Agent completed in {} turns via {} ({} + {} tokens)",
+                    "Agent completed in {} turns via {} ({} + {} tokens, cache: {}w/{}r)",
                     turn + 1,
                     last_provider,
                     response.usage.prompt_tokens,
-                    response.usage.completion_tokens
+                    response.usage.completion_tokens,
+                    response.usage.cache_creation_tokens,
+                    response.usage.cache_read_tokens,
                 );
                 let (deduped, counts) = dedup_with_counts(&tools_used);
                 return Ok(AgentResult {

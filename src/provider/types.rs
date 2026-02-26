@@ -91,6 +91,8 @@ pub struct LlmResponse {
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
+    pub cache_creation_tokens: u32,
+    pub cache_read_tokens: u32,
 }
 
 #[derive(Debug, thiserror::Error)]
