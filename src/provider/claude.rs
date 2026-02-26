@@ -29,15 +29,11 @@ impl ClaudeProvider {
             "model": self.model,
             "max_tokens": 4096,
             "messages": api_messages,
+            "cache_control": { "type": "ephemeral" },
         });
 
         if !system_prompt.is_empty() {
-            // Use content blocks with cache_control for prompt caching
-            body["system"] = json!([{
-                "type": "text",
-                "text": system_prompt,
-                "cache_control": { "type": "ephemeral" }
-            }]);
+            body["system"] = json!(system_prompt);
         }
 
         if !tools.is_empty() {
@@ -51,7 +47,6 @@ impl ClaudeProvider {
             .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
-            .header("anthropic-beta", "prompt-caching-2024-07-31")
             .header("content-type", "application/json")
             .json(&body)
             .send()
@@ -200,21 +195,14 @@ fn build_claude_messages(messages: &[Message]) -> (String, Vec<serde_json::Value
 /// Convert our generic ToolDef format to Claude tool format.
 /// Claude uses { name, description, input_schema } instead of OpenAI's { type: "function", function: { ... } }
 fn build_claude_tools(tools: &[ToolDef]) -> serde_json::Value {
-    let len = tools.len();
     let claude_tools: Vec<serde_json::Value> = tools
         .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let mut tool = json!({
+        .map(|t| {
+            json!({
                 "name": t.function.name,
                 "description": t.function.description,
                 "input_schema": t.function.parameters,
-            });
-            // Cache control on last tool — caches system + all tools together
-            if i == len - 1 {
-                tool["cache_control"] = json!({ "type": "ephemeral" });
-            }
-            tool
+            })
         })
         .collect();
 
