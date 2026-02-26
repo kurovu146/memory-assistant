@@ -112,23 +112,20 @@ fn parse_entities(text: &str) -> Vec<(String, String)> {
 
 /// Extract a short context snippet around the entity name in the text.
 fn build_context_snippet(text: &str, entity_name: &str) -> Option<String> {
-    let lower_text = text.to_lowercase();
-    let lower_name = entity_name.to_lowercase();
+    // Use char-based indexing to avoid panics on multibyte characters (CJK, etc.)
+    let chars: Vec<char> = text.chars().collect();
+    let name_chars: Vec<char> = entity_name.to_lowercase().chars().collect();
+    let lower_chars: Vec<char> = text.to_lowercase().chars().collect();
 
-    let pos = lower_text.find(&lower_name)?;
+    // Find entity name position in char indices
+    let pos = lower_chars
+        .windows(name_chars.len())
+        .position(|w| w == name_chars.as_slice())?;
 
-    let start = pos.saturating_sub(50);
-    let end = (pos + entity_name.len() + 50).min(text.len());
+    let context_chars = 30; // chars (not bytes) of context around the match
+    let start = pos.saturating_sub(context_chars);
+    let end = (pos + name_chars.len() + context_chars).min(chars.len());
 
-    // Align to char boundaries
-    let start = text[..start]
-        .rfind(char::is_whitespace)
-        .map(|p| p + 1)
-        .unwrap_or(start);
-    let end = text[end..]
-        .find(char::is_whitespace)
-        .map(|p| end + p)
-        .unwrap_or(end);
-
-    Some(text[start..end].to_string())
+    let snippet: String = chars[start..end].iter().collect();
+    Some(snippet)
 }
