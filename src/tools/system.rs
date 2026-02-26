@@ -27,11 +27,18 @@ pub async fn bash_exec(command: &str, timeout_secs: Option<u64>) -> String {
 
     info!("bash_exec: {command}");
 
+    // Ensure common paths are available (some process managers strip PATH)
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/kuro".to_string());
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let full_path = format!("{home}/.cargo/bin:/usr/local/bin:/usr/bin:/bin:{current_path}");
+
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(timeout),
         Command::new("bash")
             .arg("-c")
             .arg(command)
+            .env("PATH", &full_path)
+            .env("HOME", &home)
             .output(),
     )
     .await;
