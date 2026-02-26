@@ -7,6 +7,16 @@
 /// If `tools_used` is provided, also detects hallucinated command output
 /// (model pretending to run commands without actually calling bash tool).
 pub fn clean_response(text: &str, tools_used: &[String]) -> String {
+    clean_response_inner(text, tools_used, false)
+}
+
+/// Same as clean_response but can skip fabrication checks when content was provided directly
+/// (e.g. file uploads where text is already in the prompt).
+pub fn clean_response_with_context(text: &str, tools_used: &[String], has_direct_content: bool) -> String {
+    clean_response_inner(text, tools_used, has_direct_content)
+}
+
+fn clean_response_inner(text: &str, tools_used: &[String], has_direct_content: bool) -> String {
     let mut result = text.to_string();
 
     // Remove <function=...>{...}</function> patterns (and trailing ...)
@@ -70,7 +80,8 @@ pub fn clean_response(text: &str, tools_used: &[String]) -> String {
 
     // Detect when model claims to have performed actions but used NO tools at all.
     // This catches fabricated grep/read/bash results written as prose.
-    if tools_used.is_empty() && looks_like_fabricated_action(&result) {
+    // Skip this check when direct content was provided (file uploads, images).
+    if !has_direct_content && tools_used.is_empty() && looks_like_fabricated_action(&result) {
         result.push_str("\n\n⚠️ _Cảnh báo: câu trả lời trên có thể không chính xác vì em chưa thực sự gọi tool nào để kiểm tra._");
     }
 

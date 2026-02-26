@@ -192,7 +192,7 @@ async fn handle_photo(
         media_type: media_type.to_string(),
     };
 
-    run_agent_and_respond(msg, bot, state, user_id, &history_text, content).await
+    run_agent_with_direct_content(msg, bot, state, user_id, &history_text, content).await
 }
 
 /// Handle document/file messages: download → read text → send to Claude
@@ -290,7 +290,7 @@ async fn handle_document(
             image_base64,
             media_type,
         };
-        return run_agent_and_respond(msg, bot, state, user_id, &history_text, content).await;
+        return run_agent_with_direct_content(msg, bot, state, user_id, &history_text, content).await;
     }
 
     // Handle document files (PDF, DOCX, XLSX)
@@ -321,7 +321,7 @@ async fn handle_document(
         let history_text = format!("[File: {file_name}] {caption}");
         let content = MessageContent::Text(prompt);
 
-        return run_agent_and_respond(msg, bot, state, user_id, &history_text, content).await;
+        return run_agent_with_direct_content(msg, bot, state, user_id, &history_text, content).await;
     }
 
     // Handle as text file
@@ -346,7 +346,7 @@ async fn handle_document(
     let history_text = format!("[File: {file_name}] {caption}");
     let content = MessageContent::Text(prompt);
 
-    run_agent_and_respond(msg, bot, state, user_id, &history_text, content).await
+    run_agent_with_direct_content(msg, bot, state, user_id, &history_text, content).await
 }
 
 /// Common function: run agent loop and send response back to Telegram
@@ -357,6 +357,31 @@ async fn run_agent_and_respond(
     user_id: u64,
     history_text: &str,
     user_content: MessageContent,
+) -> ResponseResult<()> {
+    run_agent_and_respond_inner(msg, bot, state, user_id, history_text, user_content, false).await
+}
+
+/// Same as run_agent_and_respond but marks that direct content was provided (file/image).
+/// This suppresses false "fabrication" warnings since the content is already in the prompt.
+async fn run_agent_with_direct_content(
+    msg: &teloxide::types::Message,
+    bot: &Bot,
+    state: &AppState,
+    user_id: u64,
+    history_text: &str,
+    user_content: MessageContent,
+) -> ResponseResult<()> {
+    run_agent_and_respond_inner(msg, bot, state, user_id, history_text, user_content, true).await
+}
+
+async fn run_agent_and_respond_inner(
+    msg: &teloxide::types::Message,
+    bot: &Bot,
+    state: &AppState,
+    user_id: u64,
+    history_text: &str,
+    user_content: MessageContent,
+    has_direct_content: bool,
 ) -> ResponseResult<()> {
     // Send initial progress message
     let _ = bot.send_chat_action(msg.chat.id, ChatAction::Typing).await;
@@ -447,7 +472,11 @@ async fn run_agent_and_respond(
 
     match result {
         Ok(agent_result) => {
-            let cleaned = formatter::clean_response(&agent_result.response, &agent_result.tools_used);
+            let cleaned = if has_direct_content {
+                formatter::clean_response_with_context(&agent_result.response, &agent_result.tools_used, true)
+            } else {
+                formatter::clean_response(&agent_result.response, &agent_result.tools_used)
+            };
 
             // Save assistant response to history
             state.db.append_message(&session_id, "assistant", &cleaned);
