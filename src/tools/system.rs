@@ -356,24 +356,28 @@ pub async fn glob_search(pattern: &str, path: Option<&str>) -> String {
         pattern.to_string()
     };
 
-    // Prune heavy directories that slow down find (especially on macOS)
-    let prune_dirs = [
-        "Library", "node_modules", ".git", ".Trash", ".cache",
-        ".npm", ".cargo/registry", ".rustup", "target/debug",
-        "target/release", ".local/share", "Pictures", "Movies", "Music",
+    // Simple, cross-platform find command
+    // Exclude heavy dirs via -not -path to avoid BSD/GNU find prune differences
+    let excludes = [
+        "*/Library/*", "*/node_modules/*", "*/.git/*", "*/.Trash/*",
+        "*/.cache/*", "*/.npm/*", "*/.cargo/registry/*", "*/.rustup/*",
+        "*/Pictures/*", "*/Movies/*", "*/Music/*",
     ];
-    let prune_expr: String = prune_dirs
+    let exclude_expr: String = excludes
         .iter()
-        .map(|d| format!("-name '{}' -prune", d.split('/').next().unwrap_or(d)))
+        .map(|e| format!("-not -path '{e}'"))
         .collect::<Vec<_>>()
-        .join(" -o ");
+        .join(" ");
 
     let cmd = format!(
-        "find '{}' \\( {} \\) -o -type f -name '{}' -print 2>/dev/null | head -200",
-        base_dir, prune_expr, name_pattern
+        "find '{}' -type f -name '{}' {} 2>/dev/null | head -200",
+        base_dir, name_pattern, exclude_expr
     );
 
+    info!("glob cmd: {cmd}");
+
     let output = bash_exec(&cmd, Some(30)).await;
+    info!("glob output ({} chars): {}", output.len(), &output[..output.len().min(200)]);
 
     if output.is_empty() || output.contains("(no output") {
         return format!("No files matching '{pattern}' found in {base_dir}");
