@@ -237,6 +237,7 @@ pub fn tool_icon(name: &str) -> &str {
         "file_write" => "✏️",
         "file_list" => "📁",
         "grep" => "🔍",
+        "glob" => "📂",
         _ => "🔧",
     }
 }

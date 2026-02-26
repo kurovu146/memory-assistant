@@ -316,6 +316,90 @@ pub async fn grep_search(
     }
 }
 
+// ---------- glob ----------
+
+/// Find files matching a glob pattern. Supports *, **, ?.
+/// Returns matching file paths sorted by modification time (newest first).
+pub async fn glob_search(pattern: &str, path: Option<&str>) -> String {
+    if pattern.is_empty() {
+        return "Error: pattern cannot be empty".into();
+    }
+
+    let base_dir = path.unwrap_or(".");
+    let base = Path::new(base_dir);
+
+    if !base.exists() {
+        return format!("Error: path not found: {base_dir}");
+    }
+
+    info!("glob: pattern={pattern}, path={base_dir}");
+
+    // Use find command with -name or -path pattern for glob matching
+    // This is more reliable than implementing glob in pure Rust
+    let cmd = if pattern.contains('/') || pattern.contains("**") {
+        // Path-based pattern: use find with shell glob
+        // Convert ** to find's recursive behavior
+        let find_pattern = pattern.replace("**/", "*/");
+        format!(
+            "find '{}' -type f -name '{}' 2>/dev/null | head -200",
+            base_dir,
+            find_pattern.rsplit('/').next().unwrap_or(&find_pattern)
+        )
+    } else {
+        // Simple name pattern
+        format!(
+            "find '{}' -type f -name '{}' 2>/dev/null | head -200",
+            base_dir, pattern
+        )
+    };
+
+    let output = bash_exec(&cmd, Some(15)).await;
+
+    if output.is_empty() || output.contains("(no output") {
+        return format!("No files matching '{pattern}' found in {base_dir}");
+    }
+
+    // Collect and sort by modification time (newest first)
+    let mut files: Vec<(String, u64)> = output
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with("Error") && !l.contains("--- stderr"))
+        .filter_map(|path| {
+            let meta = std::fs::metadata(path).ok()?;
+            let mtime = meta
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs();
+            Some((path.to_string(), mtime))
+        })
+        .collect();
+
+    files.sort_by(|a, b| b.1.cmp(&a.1)); // newest first
+
+    if files.is_empty() {
+        return format!("No files matching '{pattern}' found in {base_dir}");
+    }
+
+    let total = files.len();
+    let result: Vec<String> = files
+        .iter()
+        .take(100)
+        .map(|(path, _)| {
+            let size = std::fs::metadata(path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            format!("{path}  ({size} bytes)")
+        })
+        .collect();
+
+    let mut output = format!("{total} files found:\n{}", result.join("\n"));
+    if total > 100 {
+        output.push_str(&format!("\n... ({} more files)", total - 100));
+    }
+    output
+}
+
 // ---------- Helpers ----------
 
 fn truncate_output(s: &str) -> String {

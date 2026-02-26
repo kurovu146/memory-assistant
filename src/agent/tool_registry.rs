@@ -152,6 +152,17 @@ impl ToolRegistry {
                     "required": ["pattern"]
                 }),
             ),
+            tool_def("glob",
+                "Find files by name pattern. Supports wildcards: * (any chars), ? (single char). Returns matching paths sorted by modification time (newest first).",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Glob pattern to match files (e.g. '*.json', '*.rs', 'kuro-*')" },
+                        "path": { "type": "string", "description": "Directory to search in (default: current dir)" }
+                    },
+                    "required": ["pattern"]
+                }),
+            ),
         ]
     }
 
@@ -241,6 +252,11 @@ impl ToolRegistry {
                 let include = args["include"].as_str();
                 let context = args["context"].as_u64().map(|v| v as usize);
                 tools::grep_search(pattern, path, include, context).await
+            }
+            "glob" => {
+                let pattern = args["pattern"].as_str().unwrap_or("");
+                let path = args["path"].as_str();
+                tools::glob_search(pattern, path).await
             }
             _ => format!("Unknown tool: {tool_name}"),
         }
