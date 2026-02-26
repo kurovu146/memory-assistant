@@ -10,7 +10,8 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Self {
-        dotenvy::from_path_override("/home/kuro/dev/memory-assistant/.env").ok();
+        // Try .env in current directory first, then fallback to hardcoded VPS path
+        dotenvy::dotenv_override().ok();
 
         Self {
             telegram_bot_token: env::var("TELEGRAM_BOT_TOKEN")
