@@ -94,6 +94,64 @@ impl ToolRegistry {
                 "Get current date and time in UTC and common timezones (Vietnam, US Eastern).",
                 json!({ "type": "object", "properties": {} }),
             ),
+            // --- System ---
+            tool_def("bash",
+                "Execute a bash command on the server. Use for git, npm, cargo, system info, or any terminal operation. Returns stdout + stderr.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "The bash command to execute" },
+                        "timeout": { "type": "integer", "description": "Timeout in seconds (default 30, max 120)" }
+                    },
+                    "required": ["command"]
+                }),
+            ),
+            tool_def("file_read",
+                "Read a file from the filesystem. Returns content with line numbers. Use offset/limit for large files.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Absolute or relative file path" },
+                        "offset": { "type": "integer", "description": "Start reading from this line (0-indexed, optional)" },
+                        "limit": { "type": "integer", "description": "Max number of lines to read (optional)" }
+                    },
+                    "required": ["path"]
+                }),
+            ),
+            tool_def("file_write",
+                "Write content to a file. Creates parent directories if needed. Overwrites existing file.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Absolute or relative file path" },
+                        "content": { "type": "string", "description": "Content to write" }
+                    },
+                    "required": ["path", "content"]
+                }),
+            ),
+            tool_def("file_list",
+                "List directory contents. Shows files with sizes and subdirectories.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Directory path (default: current dir)" },
+                        "recursive": { "type": "boolean", "description": "List recursively (default: false, max depth 5)" }
+                    }
+                }),
+            ),
+            tool_def("grep",
+                "Search file contents using regex pattern (via ripgrep). Returns matching lines with line numbers.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Regex pattern to search for" },
+                        "path": { "type": "string", "description": "Directory or file to search in (default: current dir)" },
+                        "include": { "type": "string", "description": "Glob pattern to filter files (e.g. '*.rs', '*.json')" },
+                        "context": { "type": "integer", "description": "Lines of context around matches (default: 0)" }
+                    },
+                    "required": ["pattern"]
+                }),
+            ),
         ]
     }
 
@@ -156,6 +214,34 @@ impl ToolRegistry {
                 tools::entity_search(db, user_id, query).await
             }
             "get_datetime" => tools::get_datetime().await,
+            "bash" => {
+                let command = args["command"].as_str().unwrap_or("");
+                let timeout = args["timeout"].as_u64().map(|t| t.min(120));
+                tools::bash_exec(command, timeout).await
+            }
+            "file_read" => {
+                let path = args["path"].as_str().unwrap_or("");
+                let offset = args["offset"].as_u64().map(|v| v as usize);
+                let limit = args["limit"].as_u64().map(|v| v as usize);
+                tools::file_read(path, offset, limit).await
+            }
+            "file_write" => {
+                let path = args["path"].as_str().unwrap_or("");
+                let content = args["content"].as_str().unwrap_or("");
+                tools::file_write(path, content).await
+            }
+            "file_list" => {
+                let path = args["path"].as_str().unwrap_or("");
+                let recursive = args["recursive"].as_bool().unwrap_or(false);
+                tools::file_list(path, recursive).await
+            }
+            "grep" => {
+                let pattern = args["pattern"].as_str().unwrap_or("");
+                let path = args["path"].as_str();
+                let include = args["include"].as_str();
+                let context = args["context"].as_u64().map(|v| v as usize);
+                tools::grep_search(pattern, path, include, context).await
+            }
             _ => format!("Unknown tool: {tool_name}"),
         }
     }

@@ -232,6 +232,11 @@ pub fn tool_icon(name: &str) -> &str {
         "knowledge_save" | "knowledge_search" => "📚",
         "entity_search" => "🔗",
         "get_datetime" => "🕐",
+        "bash" => "💻",
+        "file_read" => "📄",
+        "file_write" => "✏️",
+        "file_list" => "📁",
+        "grep" => "🔍",
         _ => "🔧",
     }
 }

@@ -41,8 +41,28 @@ You communicate via Telegram, so keep responses concise and mobile-friendly.
 4. **Context Aware**: Link related information across memories
 
 ## Tools
-You have access to: memory_save, memory_search, memory_list, memory_delete, knowledge_save, knowledge_search, entity_search, get_datetime.
+You have access to:
+- Memory: memory_save, memory_search, memory_list, memory_delete
+- Knowledge: knowledge_save, knowledge_search, entity_search
+- System: bash, file_read, file_write, file_list, grep
+- Utility: get_datetime
+
 Call tools via tool_calls in your response — the system executes them and returns results.
+
+## System Tools
+- `bash` — Execute shell commands (git, cargo, npm, system info, etc.). Max timeout 120s.
+- `file_read` — Read file contents with line numbers. Use offset/limit for large files.
+- `file_write` — Write/create files. Creates parent dirs automatically.
+- `file_list` — List directory contents. Use recursive=true for tree view (max depth 5).
+- `grep` — Search file contents by regex pattern (via ripgrep). Supports glob filtering.
+
+### System Tools Best Practices
+- Use `file_read` to read files, NOT `bash` with cat/head/tail
+- Use `file_list` to list directories, NOT `bash` with ls/find
+- Use `grep` to search content, NOT `bash` with grep/rg
+- Use `bash` for actual commands: git, cargo, npm, docker, system admin, etc.
+- NEVER run destructive commands (rm -rf /, mkfs, etc.) — they are blocked
+- NEVER expose secrets, passwords, or API keys in tool output
 
 ## Memory Management (short facts)
 - Use `memory_save` for short facts, preferences, decisions, personal info
@@ -526,7 +546,10 @@ async fn handle_command(
                  Supported input:\n\
                  - Text messages\n\
                  - Photos (with optional caption)\n\
-                 - Files (text, code, images)",
+                 - Files (text, code, images)\n\n\
+                 System tools:\n\
+                 - bash, file_read, file_write\n\
+                 - file_list, grep",
             )
             .await?;
         }
