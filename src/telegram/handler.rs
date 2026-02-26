@@ -437,7 +437,7 @@ async fn run_agent_and_respond(
 
     // Load conversation history
     let session_id = state.db.get_or_create_session(user_id);
-    let raw_history = state.db.load_history(&session_id, 10);
+    let raw_history = state.db.load_history(&session_id, 6);
     let history: Vec<Message> = raw_history
         .into_iter()
         .filter_map(|(role, content)| {

@@ -27,7 +27,7 @@ impl ClaudeProvider {
 
         let mut body = json!({
             "model": self.model,
-            "max_tokens": 8192,
+            "max_tokens": 4096,
             "messages": api_messages,
         });
 
