@@ -1,0 +1,154 @@
+use tracing::{debug, info, warn};
+
+use crate::db::Database;
+use crate::provider::{Message, MessageContent, ProviderPool, Role};
+
+use super::tool_registry::ToolRegistry;
+
+/// Progress updates sent during agent execution.
+pub enum AgentProgress {
+    /// A tool is about to be executed.
+    ToolUse(String),
+    /// LLM is being called (new turn starting).
+    Thinking,
+}
+
+/// Result of an agent loop execution.
+pub struct AgentResult {
+    pub response: String,
+    /// Deduplicated list of tools used.
+    pub tools_used: Vec<String>,
+    /// Counts for each tool (parallel to tools_used).
+    pub tools_count: Vec<usize>,
+    pub provider: String,
+    pub turns: usize,
+}
+
+pub struct AgentLoop;
+
+impl AgentLoop {
+    /// Run the agent loop: send messages to LLM, execute tool calls, repeat.
+    pub async fn run<F>(
+        pool: &ProviderPool,
+        system_prompt: &str,
+        user_message: &str,
+        user_id: u64,
+        db: &Database,
+        max_turns: usize,
+        history: Vec<Message>,
+        on_progress: F,
+    ) -> Result<AgentResult, String>
+    where
+        F: Fn(AgentProgress),
+    {
+        let tools = ToolRegistry::definitions();
+        let mut tools_used: Vec<String> = Vec::new();
+        let mut last_provider = String::new();
+
+        // Build messages: system + history + current user message
+        let mut messages = vec![Message {
+            role: Role::System,
+            content: MessageContent::Text(system_prompt.to_string()),
+        }];
+        messages.extend(history);
+        messages.push(Message {
+            role: Role::User,
+            content: MessageContent::Text(user_message.to_string()),
+        });
+
+        for turn in 0..max_turns {
+            debug!("Agent turn {}/{}", turn + 1, max_turns);
+            on_progress(AgentProgress::Thinking);
+
+            let (response, provider_name) = pool.chat(&messages, &tools).await
+                .map_err(|e| format!("LLM error: {e}"))?;
+
+            last_provider = provider_name;
+
+            // If no tool calls, return the text content
+            if response.tool_calls.is_empty() {
+                let content = response.content.unwrap_or_default();
+                info!(
+                    "Agent completed in {} turns via {} ({} + {} tokens)",
+                    turn + 1,
+                    last_provider,
+                    response.usage.prompt_tokens,
+                    response.usage.completion_tokens
+                );
+                let (deduped, counts) = dedup_with_counts(&tools_used);
+                return Ok(AgentResult {
+                    response: content,
+                    tools_used: deduped,
+                    tools_count: counts,
+                    provider: last_provider,
+                    turns: turn + 1,
+                });
+            }
+
+            // Add assistant message with tool calls to history
+            messages.push(Message {
+                role: Role::Assistant,
+                content: MessageContent::AssistantWithToolCalls {
+                    text: response.content.clone(),
+                    tool_calls: response.tool_calls.clone(),
+                },
+            });
+
+            // Execute each tool call and add results
+            for tc in &response.tool_calls {
+                let tool_name = &tc.function.name;
+                debug!("Executing tool: {tool_name}({})", tc.function.arguments);
+
+                tools_used.push(tool_name.clone());
+                on_progress(AgentProgress::ToolUse(tool_name.clone()));
+
+                let result = ToolRegistry::execute(
+                    tool_name,
+                    &tc.function.arguments,
+                    user_id,
+                    db,
+                    pool,
+                )
+                .await;
+
+                messages.push(Message {
+                    role: Role::Tool,
+                    content: MessageContent::ToolResult {
+                        tool_call_id: tc.id.clone(),
+                        name: tool_name.clone(),
+                        content: result,
+                    },
+                });
+            }
+        }
+
+        warn!("Agent hit max turns ({max_turns})");
+        let last_assistant = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::Assistant)
+            .map(|m| m.content.as_text().to_string())
+            .unwrap_or_else(|| "Reached max processing limit. Please try again.".into());
+
+        let (deduped, counts) = dedup_with_counts(&tools_used);
+        Ok(AgentResult {
+            response: last_assistant,
+            tools_used: deduped,
+            tools_count: counts,
+            provider: last_provider,
+            turns: max_turns,
+        })
+    }
+}
+
+/// Deduplicate a list of tool names while counting occurrences.
+fn dedup_with_counts(tools: &[String]) -> (Vec<String>, Vec<usize>) {
+    use std::collections::BTreeMap;
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for t in tools {
+        *counts.entry(t.as_str()).or_default() += 1;
+    }
+    let names: Vec<String> = counts.keys().map(|k| k.to_string()).collect();
+    let cnts: Vec<usize> = counts.values().copied().collect();
+    (names, cnts)
+}
