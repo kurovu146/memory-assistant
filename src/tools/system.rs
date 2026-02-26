@@ -356,23 +356,48 @@ pub async fn glob_search(pattern: &str, path: Option<&str>) -> String {
         pattern.to_string()
     };
 
-    // Simple, cross-platform find command
-    // Exclude heavy dirs via -not -path to avoid BSD/GNU find prune differences
-    let excludes = [
-        "*/Library/*", "*/node_modules/*", "*/.git/*", "*/.Trash/*",
-        "*/.cache/*", "*/.npm/*", "*/.cargo/registry/*", "*/.rustup/*",
-        "*/Pictures/*", "*/Movies/*", "*/Music/*",
-    ];
-    let exclude_expr: String = excludes
-        .iter()
-        .map(|e| format!("-not -path '{e}'"))
-        .collect::<Vec<_>>()
-        .join(" ");
+    // Try mdfind (macOS Spotlight) first — instant results via filesystem index
+    // Then fallback to find command for Linux
+    let is_macos = cfg!(target_os = "macos") || {
+        // Runtime check: mdfind exists?
+        let check = bash_exec("which mdfind 2>/dev/null", Some(3)).await;
+        check.contains("/mdfind")
+    };
 
-    let cmd = format!(
-        "find '{}' -type f -name '{}' {} 2>/dev/null | head -200",
-        base_dir, name_pattern, exclude_expr
-    );
+    let cmd = if is_macos {
+        // mdfind uses Spotlight index — near-instant even on large filesystems
+        // -name does filename matching, -onlyin scopes the search directory
+        if name_pattern.contains('*') || name_pattern.contains('?') {
+            // Wildcard: convert glob to kMDItemFSName query
+            let md_pattern = name_pattern.replace('*', "*").replace('?', "?");
+            format!(
+                "mdfind -onlyin '{}' 'kMDItemFSName == \"{}\"wc' 2>/dev/null | head -200",
+                base_dir, md_pattern
+            )
+        } else {
+            // Exact filename
+            format!(
+                "mdfind -onlyin '{}' -name '{}' 2>/dev/null | head -200",
+                base_dir, name_pattern
+            )
+        }
+    } else {
+        // Linux: use find with exclusions
+        let excludes = [
+            "*/node_modules/*", "*/.git/*", "*/.cache/*",
+            "*/.npm/*", "*/.cargo/registry/*", "*/.rustup/*",
+        ];
+        let exclude_expr: String = excludes
+            .iter()
+            .map(|e| format!("-not -path '{e}'"))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        format!(
+            "find '{}' -type f -name '{}' {} 2>/dev/null | head -200",
+            base_dir, name_pattern, exclude_expr
+        )
+    };
 
     info!("glob cmd: {cmd}");
 
