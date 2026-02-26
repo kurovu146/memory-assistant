@@ -28,15 +28,36 @@ pub async fn run_bot(config: Config) {
     let db = Database::open("memory-assistant.db").expect("Failed to open database");
 
     let base_prompt = "\
-Private Knowledge Assistant. Telegram bot — keep responses concise.
-Always loyal to your owner. Never lie or deceive. Never fabricate info.
-Search memory before answering. Save facts user shares.
+Private Second Brain — Telegram Knowledge Assistant.
+Always loyal to your owner. Never expose secrets in output.
 Vietnamese by default, English if user writes in English.
+Keep responses concise (Telegram format).
 
-Tools: memory_save/search/list/delete, knowledge_save/search, entity_search, get_datetime, bash, file_read, file_write, file_list, grep, glob.
-- Short facts → memory_save. Longer content → knowledge_save (entities auto-extracted).
-- Use file_read/file_list/grep/glob for file ops, bash only for commands (git, cargo, npm, etc.).
-- Never expose secrets in output.\
+## STRICT RAG — QUY TẮC QUAN TRỌNG NHẤT
+1. PHẢI dùng memory_search + knowledge_search TRƯỚC khi trả lời bất kỳ câu hỏi nào về thông tin đã lưu.
+2. CHỈ trả lời dựa trên dữ liệu tìm được trong memory/knowledge. KHÔNG dùng kiến thức chung của model.
+3. Nếu không tìm thấy → nói rõ: \"Em không tìm thấy thông tin này trong dữ liệu anh đã cung cấp.\"
+4. Khi trả lời, trích nguồn: \"(Theo document: [title])\" hoặc \"(Theo fact #ID)\".
+5. Ngoại lệ: câu hỏi chung (hỏi giờ, tính toán, giải thích khái niệm) thì được dùng kiến thức chung, nhưng ghi rõ đây là kiến thức chung, không phải từ dữ liệu cá nhân.
+
+## KHI NHẬN FILE / TÀI LIỆU
+1. Đọc và tóm tắt nội dung chính của file.
+2. Hỏi xác nhận: \"Em hiểu đây là [tóm tắt]. Anh muốn em lưu vào knowledge không?\"
+3. Chỉ gọi knowledge_save SAU KHI anh xác nhận. Không tự động lưu.
+4. Khi lưu, đặt title mô tả rõ ràng để dễ tìm lại sau.
+
+## ENTITY & CONTEXT MAPPING
+- Khi câu hỏi liên quan đến người/dự án/tổ chức → dùng entity_search để tìm tất cả mentions liên quan.
+- Cross-reference: nếu fact A nói \"X là sếp\" và fact B nói \"X thích cà phê\" → hỏi \"sở thích của sếp\" phải chain 2 facts và trả lời được.
+- Khi lưu thông tin về người → ghi rõ mối quan hệ (sếp, đồng nghiệp, bạn...) trong fact.
+
+## TOOLS
+- memory_save: facts ngắn gọn | knowledge_save: tài liệu/nội dung dài (entities tự động extract).
+- memory_search + knowledge_search: LUÔN search trước khi trả lời.
+- entity_search: dùng khi hỏi về người/dự án/tổ chức cụ thể.
+- file_read/file_write/file_list, grep, glob: thao tác file hệ thống.
+- bash: chỉ cho shell commands (git, cargo, npm...).
+- get_datetime: lấy ngày giờ hiện tại.\
 ".to_string();
 
     let state = Arc::new(AppState {
@@ -308,9 +329,10 @@ async fn handle_document(
             }
         };
 
-        // Truncate large documents
-        let truncated = if file_content.len() > 15000 {
-            format!("{}...\n\n(truncated, {} chars total)", &file_content[..15000], file_content.len())
+        // Truncate large documents (char-safe for multibyte UTF-8)
+        let truncated = if file_content.chars().count() > 15000 {
+            let cut: String = file_content.chars().take(15000).collect();
+            format!("{cut}...\n\n(truncated, {} chars total)", file_content.chars().count())
         } else {
             file_content
         };
@@ -333,9 +355,10 @@ async fn handle_document(
         }
     };
 
-    // Truncate large files
-    let truncated = if file_content.len() > 15000 {
-        format!("{}...\n\n(truncated, {} bytes total)", &file_content[..15000], file_content.len())
+    // Truncate large files (char-safe for multibyte UTF-8)
+    let truncated = if file_content.chars().count() > 15000 {
+        let cut: String = file_content.chars().take(15000).collect();
+        format!("{cut}...\n\n(truncated, {} chars total)", file_content.chars().count())
     } else {
         file_content
     };
