@@ -17,6 +17,7 @@ struct AppState {
     db: Database,
     config: Config,
     base_prompt: String,
+    telegram_token: String,
 }
 
 pub async fn run_bot(config: Config) {
@@ -65,6 +66,12 @@ When user shares information to remember:
 - Confirm what was saved, category/tags assigned
 - Search first to find related existing memories/documents
 
+## Images & Files
+- When user sends an image, analyze its content and respond accordingly
+- If the image contains text (screenshot, document, etc.), extract and summarize the key information
+- If user asks to save the content from an image, use `knowledge_save` with the extracted text
+- When user sends a file/document, read and analyze its content
+
 ## Response Style
 - Concise, to the point
 - Vietnamese by default, English if user writes in English
@@ -83,6 +90,7 @@ When user shares information to remember:
         db,
         config: config.clone(),
         base_prompt,
+        telegram_token: config.telegram_bot_token.clone(),
     });
 
     info!(
@@ -141,6 +149,20 @@ async fn handle_message(
         return Ok(());
     }
 
+    // Check for photo
+    if let Some(photos) = msg.photo() {
+        if !photos.is_empty() {
+            let caption = msg.caption().unwrap_or("Analyze this image");
+            return handle_photo(&msg, &bot, &state, photos, caption, user_id).await;
+        }
+    }
+
+    // Check for document/file
+    if let Some(doc) = msg.document() {
+        let caption = msg.caption().unwrap_or("Analyze this file");
+        return handle_document(&msg, &bot, &state, doc, caption, user_id).await;
+    }
+
     // Get text content
     let text = match msg.text() {
         Some(t) if !t.is_empty() => t.to_string(),
@@ -152,11 +174,199 @@ async fn handle_message(
         return handle_command(&msg, &bot, &state, &text, user_id).await;
     }
 
+    // Run agent with text
+    let content = MessageContent::Text(text.clone());
+    run_agent_and_respond(&msg, &bot, &state, user_id, &text, content).await
+}
+
+/// Handle photo messages: download image → base64 → send to Claude vision
+async fn handle_photo(
+    msg: &teloxide::types::Message,
+    bot: &Bot,
+    state: &AppState,
+    photos: &[teloxide::types::PhotoSize],
+    caption: &str,
+    user_id: u64,
+) -> ResponseResult<()> {
+    // Get highest resolution photo (last in array)
+    let photo = &photos[photos.len() - 1];
+
+    // Download the photo
+    let file = bot.get_file(&photo.file.id).await?;
+    let file_path = &file.path;
+
+    let url = format!(
+        "https://api.telegram.org/file/bot{}/{}",
+        state.telegram_token, file_path
+    );
+
+    let image_bytes = match reqwest::get(&url).await {
+        Ok(resp) => match resp.bytes().await {
+            Ok(b) => b,
+            Err(e) => {
+                bot.send_message(msg.chat.id, &format!("Download error: {e}")).await?;
+                return Ok(());
+            }
+        },
+        Err(e) => {
+            bot.send_message(msg.chat.id, &format!("Download error: {e}")).await?;
+            return Ok(());
+        }
+    };
+
+    // Detect media type from file extension
+    let media_type = if file_path.ends_with(".png") {
+        "image/png"
+    } else if file_path.ends_with(".gif") {
+        "image/gif"
+    } else if file_path.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    };
+
+    // Encode to base64
+    use base64::Engine;
+    let image_base64 = base64::engine::general_purpose::STANDARD.encode(&image_bytes);
+
+    info!("Photo received: {} bytes, {media_type}", image_bytes.len());
+
+    let history_text = format!("[Image: {media_type}] {caption}");
+    let content = MessageContent::ImageWithText {
+        text: caption.to_string(),
+        image_base64,
+        media_type: media_type.to_string(),
+    };
+
+    run_agent_and_respond(msg, bot, state, user_id, &history_text, content).await
+}
+
+/// Handle document/file messages: download → read text → send to Claude
+async fn handle_document(
+    msg: &teloxide::types::Message,
+    bot: &Bot,
+    state: &AppState,
+    doc: &teloxide::types::Document,
+    caption: &str,
+    user_id: u64,
+) -> ResponseResult<()> {
+    let file_name = doc.file_name.as_deref().unwrap_or("unknown");
+    let mime = doc.mime_type.as_ref().map(|m| m.to_string()).unwrap_or_default();
+
+    // Only handle text-based files and images
+    let is_text = mime.starts_with("text/")
+        || mime.contains("json")
+        || mime.contains("xml")
+        || mime.contains("javascript")
+        || mime.contains("typescript")
+        || mime.contains("yaml")
+        || mime.contains("toml")
+        || mime.contains("markdown")
+        || mime.contains("csv")
+        || file_name.ends_with(".rs")
+        || file_name.ends_with(".go")
+        || file_name.ends_with(".py")
+        || file_name.ends_with(".ts")
+        || file_name.ends_with(".js")
+        || file_name.ends_with(".md")
+        || file_name.ends_with(".txt")
+        || file_name.ends_with(".json")
+        || file_name.ends_with(".yaml")
+        || file_name.ends_with(".yml")
+        || file_name.ends_with(".toml")
+        || file_name.ends_with(".csv")
+        || file_name.ends_with(".log")
+        || file_name.ends_with(".sql")
+        || file_name.ends_with(".sh")
+        || file_name.ends_with(".env.example");
+
+    let is_image = mime.starts_with("image/");
+
+    if !is_text && !is_image {
+        bot.send_message(
+            msg.chat.id,
+            &format!("Unsupported file type: {mime}\nSupported: text files, code, images"),
+        ).await?;
+        return Ok(());
+    }
+
+    // Download file
+    let file = bot.get_file(&doc.file.id).await?;
+    let file_path = &file.path;
+
+    let url = format!(
+        "https://api.telegram.org/file/bot{}/{}",
+        state.telegram_token, file_path
+    );
+
+    let file_bytes = match reqwest::get(&url).await {
+        Ok(resp) => match resp.bytes().await {
+            Ok(b) => b,
+            Err(e) => {
+                bot.send_message(msg.chat.id, &format!("Download error: {e}")).await?;
+                return Ok(());
+            }
+        },
+        Err(e) => {
+            bot.send_message(msg.chat.id, &format!("Download error: {e}")).await?;
+            return Ok(());
+        }
+    };
+
+    if is_image {
+        // Handle as image
+        let media_type = mime.clone();
+        use base64::Engine;
+        let image_base64 = base64::engine::general_purpose::STANDARD.encode(&file_bytes);
+
+        info!("Image file received: {file_name}, {} bytes", file_bytes.len());
+
+        let history_text = format!("[File: {file_name}] {caption}");
+        let content = MessageContent::ImageWithText {
+            text: format!("File: {file_name}\n\n{caption}"),
+            image_base64,
+            media_type,
+        };
+        return run_agent_and_respond(msg, bot, state, user_id, &history_text, content).await;
+    }
+
+    // Handle as text file
+    let file_content = match String::from_utf8(file_bytes.to_vec()) {
+        Ok(s) => s,
+        Err(_) => {
+            bot.send_message(msg.chat.id, "Could not read file as text.").await?;
+            return Ok(());
+        }
+    };
+
+    // Truncate large files
+    let truncated = if file_content.len() > 15000 {
+        format!("{}...\n\n(truncated, {} bytes total)", &file_content[..15000], file_content.len())
+    } else {
+        file_content
+    };
+
+    info!("Text file received: {file_name}, {} chars", truncated.len());
+
+    let prompt = format!("File: {file_name}\n\n```\n{truncated}\n```\n\n{caption}");
+    let history_text = format!("[File: {file_name}] {caption}");
+    let content = MessageContent::Text(prompt);
+
+    run_agent_and_respond(msg, bot, state, user_id, &history_text, content).await
+}
+
+/// Common function: run agent loop and send response back to Telegram
+async fn run_agent_and_respond(
+    msg: &teloxide::types::Message,
+    bot: &Bot,
+    state: &AppState,
+    user_id: u64,
+    history_text: &str,
+    user_content: MessageContent,
+) -> ResponseResult<()> {
     // Send initial progress message
     let _ = bot.send_chat_action(msg.chat.id, ChatAction::Typing).await;
-    let progress_msg = bot
-        .send_message(msg.chat.id, "Thinking...")
-        .await?;
+    let progress_msg = bot.send_message(msg.chat.id, "Thinking...").await?;
     let progress_msg_id = progress_msg.id.0;
 
     // Typing indicator loop
@@ -201,10 +411,7 @@ async fn handle_message(
 
     // Build system prompt with memory
     let memory_ctx = state.db.build_memory_context(user_id);
-    let system_prompt = skills::build_system_prompt(
-        &state.base_prompt,
-        &memory_ctx,
-    );
+    let system_prompt = skills::build_system_prompt(&state.base_prompt, &memory_ctx);
 
     // Load conversation history
     let session_id = state.db.get_or_create_session(user_id);
@@ -221,15 +428,15 @@ async fn handle_message(
         })
         .collect();
 
-    // Save user message to history
-    state.db.append_message(&session_id, "user", &text);
+    // Save user message to history (text representation)
+    state.db.append_message(&session_id, "user", history_text);
 
     // Run agent loop
     let start = std::time::Instant::now();
     let result = AgentLoop::run(
         &state.pool,
         &system_prompt,
-        &text,
+        user_content,
         user_id,
         &state.db,
         state.config.max_agent_turns,
@@ -264,7 +471,7 @@ async fn handle_message(
             let chunks = formatter::split_message(&full_response, 4096);
 
             if let Some(first) = chunks.first() {
-                safe_edit(&bot, msg.chat.id, progress_msg_id, first).await;
+                safe_edit(bot, msg.chat.id, progress_msg_id, first).await;
             }
 
             for chunk in chunks.iter().skip(1) {
@@ -280,7 +487,7 @@ async fn handle_message(
         }
         Err(err) => {
             error!("Agent error: {err}");
-            safe_edit(&bot, msg.chat.id, progress_msg_id, &format!("Error: {err}")).await;
+            safe_edit(bot, msg.chat.id, progress_msg_id, &format!("Error: {err}")).await;
         }
     }
 
@@ -296,12 +503,16 @@ async fn handle_command(
 ) -> ResponseResult<()> {
     match text.split_whitespace().next().unwrap_or("") {
         "/start" => {
+            let key_count = state.config.claude_keys.len();
             bot.send_message(
                 msg.chat.id,
-                "Memory Assistant Bot\n\n\
-                Your private knowledge assistant.\n\
-                Send me anything to remember, or ask about saved memories.\n\n\
-                /help for commands",
+                format!(
+                    "Memory Assistant Bot\n\n\
+                    Your private knowledge assistant.\n\
+                    Send text, photos, or files to remember and analyze.\n\n\
+                    API keys: {key_count} (round-robin)\n\
+                    /help for commands"
+                ),
             )
             .await?;
         }
@@ -311,7 +522,11 @@ async fn handle_command(
                 "/start — Bot info\n\
                  /help — Show commands\n\
                  /new — Start new conversation\n\
-                 /memory — List saved memories",
+                 /memory — List saved memories\n\n\
+                 Supported input:\n\
+                 - Text messages\n\
+                 - Photos (with optional caption)\n\
+                 - Files (text, code, images)",
             )
             .await?;
         }

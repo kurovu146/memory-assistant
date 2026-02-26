@@ -31,7 +31,7 @@ impl AgentLoop {
     pub async fn run<F>(
         pool: &ProviderPool,
         system_prompt: &str,
-        user_message: &str,
+        user_content: MessageContent,
         user_id: u64,
         db: &Database,
         max_turns: usize,
@@ -53,7 +53,7 @@ impl AgentLoop {
         messages.extend(history);
         messages.push(Message {
             role: Role::User,
-            content: MessageContent::Text(user_message.to_string()),
+            content: user_content,
         });
 
         for turn in 0..max_turns {

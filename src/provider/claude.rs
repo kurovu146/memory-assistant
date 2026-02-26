@@ -90,6 +90,26 @@ fn build_claude_messages(messages: &[Message]) -> (String, Vec<serde_json::Value
                     "content": text,
                 }));
             }
+            // User messages with image → content blocks (image + text)
+            (Role::User, MessageContent::ImageWithText { text, image_base64, media_type }) => {
+                api_messages.push(json!({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": image_base64,
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": text,
+                        }
+                    ],
+                }));
+            }
             // Assistant text-only → simple text
             (Role::Assistant, MessageContent::Text(text)) => {
                 api_messages.push(json!({

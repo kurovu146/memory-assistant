@@ -20,6 +20,13 @@ pub enum Role {
 #[serde(untagged)]
 pub enum MessageContent {
     Text(String),
+    ImageWithText {
+        text: String,
+        /// Base64-encoded image data
+        image_base64: String,
+        /// MIME type (e.g. "image/jpeg", "image/png")
+        media_type: String,
+    },
     ToolResult {
         tool_call_id: String,
         name: String,
@@ -35,6 +42,7 @@ impl MessageContent {
     pub fn as_text(&self) -> &str {
         match self {
             MessageContent::Text(s) => s,
+            MessageContent::ImageWithText { text, .. } => text,
             MessageContent::ToolResult { content, .. } => content,
             MessageContent::AssistantWithToolCalls { text, .. } => {
                 text.as_deref().unwrap_or("")
