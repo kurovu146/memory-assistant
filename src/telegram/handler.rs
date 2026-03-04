@@ -732,8 +732,9 @@ async fn pdf_to_images(data: &[u8]) -> Option<Vec<Vec<u8>>> {
 
     tokio::fs::write(tmp_pdf, data).await.ok()?;
 
+    // scale-to limits the longest dimension to 4000px (Claude max is 8000)
     let output = tokio::process::Command::new("pdftoppm")
-        .args(["-png", "-r", "200", "-l", "3", tmp_pdf, tmp_prefix])
+        .args(["-png", "-scale-to", "4000", "-l", "3", tmp_pdf, tmp_prefix])
         .output()
         .await;
 
