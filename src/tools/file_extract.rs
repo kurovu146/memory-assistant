@@ -3,8 +3,44 @@
 use std::io::Cursor;
 
 /// Extract text from a PDF file's bytes.
+/// Tries pdf-extract crate first, falls back to pdftotext (poppler) if empty.
 pub fn extract_pdf(data: &[u8]) -> Result<String, String> {
-    pdf_extract::extract_text_from_mem(data).map_err(|e| format!("PDF parse error: {e}"))
+    // Try pdf-extract crate first
+    if let Ok(text) = pdf_extract::extract_text_from_mem(data) {
+        let trimmed = text.trim().to_string();
+        if !trimmed.is_empty() {
+            return Ok(trimmed);
+        }
+    }
+
+    // Fallback: write to temp file and use pdftotext (poppler-utils)
+    let tmp_path = "/tmp/_pdf_extract_tmp.pdf";
+    std::fs::write(tmp_path, data).map_err(|e| format!("Failed to write temp PDF: {e}"))?;
+
+    let output = std::process::Command::new("pdftotext")
+        .args(["-layout", tmp_path, "-"])
+        .output();
+
+    let _ = std::fs::remove_file(tmp_path);
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if text.is_empty() {
+                Err("PDF has no extractable text (may be scanned/image-based)".to_string())
+            } else {
+                Ok(text)
+            }
+        }
+        Ok(out) => Err(format!(
+            "pdftotext failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )),
+        Err(_) => Err(
+            "PDF has no extractable text. Install poppler-utils for better PDF support."
+                .to_string(),
+        ),
+    }
 }
 
 /// Extract text from a DOCX file's bytes.

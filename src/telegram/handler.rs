@@ -417,29 +417,54 @@ async fn handle_document(
         info!("Document received: {file_name}, {} bytes, {mime}", file_bytes.len());
 
         let extracted = file_extract::extract_document(file_name, &file_bytes);
-        let file_content = match extracted {
-            Ok(text) => text,
+        match extracted {
+            Ok(text) => {
+                // Text extraction succeeded
+                let truncated = if text.chars().count() > 15000 {
+                    let cut: String = text.chars().take(15000).collect();
+                    format!("{cut}...\n\n(truncated, {} chars total)", text.chars().count())
+                } else {
+                    text
+                };
+
+                info!("Document extracted: {file_name}, {} chars", truncated.len());
+
+                let prompt = format!("File: {file_name}\n\n```\n{truncated}\n```\n\n{caption}");
+                let history_text = format!("[File: {file_name}] {caption}");
+                let content = MessageContent::Text(prompt);
+
+                return run_agent_with_direct_content(msg, bot, state, user_id, &history_text, content).await;
+            }
             Err(e) => {
+                // Text extraction failed — try PDF→image→Vision fallback
+                if file_name.to_lowercase().ends_with(".pdf") {
+                    info!("PDF text extraction failed ({e}), trying image fallback");
+                    if let Some(images) = pdf_to_images(&file_bytes).await {
+                        info!("PDF converted to {} page images", images.len());
+                        use base64::Engine;
+                        let image_base64 = base64::engine::general_purpose::STANDARD.encode(&images[0]);
+
+                        let text = if images.len() > 1 {
+                            format!("File: {file_name} (page 1 of {}, image-based PDF)\n\n{caption}", images.len())
+                        } else {
+                            format!("File: {file_name} (image-based PDF)\n\n{caption}")
+                        };
+
+                        let history_text = format!("[File: {file_name}] {caption}");
+                        let content = MessageContent::ImageWithText {
+                            text,
+                            image_base64,
+                            media_type: "image/png".to_string(),
+                        };
+
+                        return run_agent_with_direct_content(msg, bot, state, user_id, &history_text, content).await;
+                    }
+                }
+
                 bot.send_message(msg.chat.id, &format!("Could not extract text from {file_name}: {e}")).await?;
                 return Ok(());
             }
-        };
-
-        // Truncate large documents (char-safe for multibyte UTF-8)
-        let truncated = if file_content.chars().count() > 15000 {
-            let cut: String = file_content.chars().take(15000).collect();
-            format!("{cut}...\n\n(truncated, {} chars total)", file_content.chars().count())
-        } else {
-            file_content
-        };
-
-        info!("Document extracted: {file_name}, {} chars", truncated.len());
-
-        let prompt = format!("File: {file_name}\n\n```\n{truncated}\n```\n\n{caption}");
-        let history_text = format!("[File: {file_name}] {caption}");
-        let content = MessageContent::Text(prompt);
-
-        return run_agent_with_direct_content(msg, bot, state, user_id, &history_text, content).await;
+        }
     }
 
     // Handle as text file
@@ -697,6 +722,50 @@ async fn handle_command(
         }
     }
     Ok(())
+}
+
+/// Convert PDF bytes to PNG images using pdftoppm (poppler).
+/// Returns Vec of PNG bytes per page, or None if pdftoppm is not available.
+async fn pdf_to_images(data: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let tmp_pdf = "/tmp/_pdf_to_img.pdf";
+    let tmp_prefix = "/tmp/_pdf_page";
+
+    tokio::fs::write(tmp_pdf, data).await.ok()?;
+
+    let output = tokio::process::Command::new("pdftoppm")
+        .args(["-png", "-r", "200", "-l", "3", tmp_pdf, tmp_prefix])
+        .output()
+        .await;
+
+    let _ = tokio::fs::remove_file(tmp_pdf).await;
+
+    let output = output.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    // Read generated page images (pdftoppm creates files like _pdf_page-1.png, _pdf_page-2.png)
+    let mut images = Vec::new();
+    for page in 1..=3 {
+        let page_path = format!("{tmp_prefix}-{page}.png");
+        if let Ok(img_data) = tokio::fs::read(&page_path).await {
+            images.push(img_data);
+            let _ = tokio::fs::remove_file(&page_path).await;
+        }
+    }
+
+    if images.is_empty() {
+        // Try single-page format: _pdf_page-01.png
+        for page in 1..=3 {
+            let page_path = format!("{tmp_prefix}-{page:02}.png");
+            if let Ok(img_data) = tokio::fs::read(&page_path).await {
+                images.push(img_data);
+                let _ = tokio::fs::remove_file(&page_path).await;
+            }
+        }
+    }
+
+    if images.is_empty() { None } else { Some(images) }
 }
 
 /// Migrate existing documents that don't have chunks yet.
