@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use teloxide::prelude::*;
 use teloxide::types::{BotCommand, ChatAction, ParseMode};
+use tokio::sync::Mutex as TokioMutex;
 use tracing::{error, info};
 
 use crate::agent::{AgentLoop, AgentProgress};
@@ -14,6 +16,19 @@ use crate::tools::EmbeddingClient;
 
 use super::formatter;
 
+struct MediaGroupFile {
+    file_name: String,
+    extracted: String,
+}
+
+struct MediaGroupData {
+    files: Vec<MediaGroupFile>,
+    caption: String,
+    chat_id: ChatId,
+    user_id: u64,
+    counter: usize,
+}
+
 struct AppState {
     pool: ProviderPool,
     db: Database,
@@ -21,6 +36,7 @@ struct AppState {
     base_prompt: String,
     telegram_token: String,
     embedding_client: Option<EmbeddingClient>,
+    media_groups: TokioMutex<HashMap<String, MediaGroupData>>,
 }
 
 pub async fn run_bot(config: Config) {
@@ -93,6 +109,7 @@ CÁCH DÙNG:
         base_prompt,
         telegram_token: config.telegram_bot_token.clone(),
         embedding_client,
+        media_groups: TokioMutex::new(HashMap::new()),
     });
 
     // Migrate existing documents: chunk + embed unchunked docs
@@ -227,6 +244,13 @@ async fn handle_message(
     {
         bot.send_message(msg.chat.id, "Unauthorized.").await?;
         return Ok(());
+    }
+
+    // Check for media group (multiple files sent at once)
+    if let Some(group_id) = msg.media_group_id() {
+        if msg.document().is_some() || msg.photo().is_some() {
+            return handle_media_group_file(&msg, &bot, &state, user_id, group_id).await;
+        }
     }
 
     // Check for photo
@@ -518,7 +542,7 @@ async fn run_agent_and_respond(
     history_text: &str,
     user_content: MessageContent,
 ) -> ResponseResult<()> {
-    run_agent_and_respond_inner(msg, bot, state, user_id, history_text, user_content, false).await
+    run_agent_and_respond_inner(msg.chat.id, bot, state, user_id, history_text, user_content, false).await
 }
 
 /// Same as run_agent_and_respond but marks that direct content was provided (file/image).
@@ -531,11 +555,11 @@ async fn run_agent_with_direct_content(
     history_text: &str,
     user_content: MessageContent,
 ) -> ResponseResult<()> {
-    run_agent_and_respond_inner(msg, bot, state, user_id, history_text, user_content, true).await
+    run_agent_and_respond_inner(msg.chat.id, bot, state, user_id, history_text, user_content, true).await
 }
 
 async fn run_agent_and_respond_inner(
-    msg: &teloxide::types::Message,
+    chat_id: ChatId,
     bot: &Bot,
     state: &AppState,
     user_id: u64,
@@ -544,13 +568,13 @@ async fn run_agent_and_respond_inner(
     has_direct_content: bool,
 ) -> ResponseResult<()> {
     // Send initial progress message
-    let _ = bot.send_chat_action(msg.chat.id, ChatAction::Typing).await;
-    let progress_msg = bot.send_message(msg.chat.id, "Thinking...").await?;
+    let _ = bot.send_chat_action(chat_id, ChatAction::Typing).await;
+    let progress_msg = bot.send_message(chat_id, "Thinking...").await?;
     let progress_msg_id = progress_msg.id.0;
 
     // Typing indicator loop
     let bot_typing = bot.clone();
-    let chat_id = msg.chat.id;
+    let chat_id = chat_id;
     let typing_active = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let typing_flag = typing_active.clone();
     let typing_handle = tokio::spawn(async move {
@@ -562,7 +586,7 @@ async fn run_agent_and_respond_inner(
 
     // Progress callback
     let bot_progress = bot.clone();
-    let progress_chat_id = msg.chat.id;
+    let progress_chat_id = chat_id;
     let last_edit = Arc::new(AtomicI64::new(0));
 
     let on_progress = move |progress: AgentProgress| {
@@ -686,27 +710,213 @@ async fn run_agent_and_respond_inner(
             let chunks = formatter::split_message(&full_response, 4096);
 
             if let Some(first) = chunks.first() {
-                safe_edit(bot, msg.chat.id, progress_msg_id, first).await;
+                safe_edit(bot, chat_id, progress_msg_id, first).await;
             }
 
             for chunk in chunks.iter().skip(1) {
                 #[allow(deprecated)]
                 let md_result = bot
-                    .send_message(msg.chat.id, chunk)
+                    .send_message(chat_id, chunk)
                     .parse_mode(ParseMode::Markdown)
                     .await;
                 if md_result.is_err() {
-                    let _ = bot.send_message(msg.chat.id, chunk).await;
+                    let _ = bot.send_message(chat_id, chunk).await;
                 }
             }
         }
         Err(err) => {
             error!("Agent error: {err}");
-            safe_edit(bot, msg.chat.id, progress_msg_id, &format!("Error: {err}")).await;
+            safe_edit(bot, chat_id, progress_msg_id, &format!("Error: {err}")).await;
         }
     }
 
     Ok(())
+}
+
+/// Extract text content from file bytes for prompt injection.
+/// Supports documents (PDF/DOCX/XLSX), text files, and returns error string for unsupported.
+fn extract_file_for_prompt(file_name: &str, data: &[u8]) -> String {
+    let lower = file_name.to_lowercase();
+
+    let is_document = lower.ends_with(".pdf")
+        || lower.ends_with(".docx")
+        || lower.ends_with(".xlsx")
+        || lower.ends_with(".xls")
+        || lower.ends_with(".doc");
+
+    if is_document {
+        use crate::tools::file_extract;
+        match file_extract::extract_document(file_name, data) {
+            Ok(text) => {
+                if text.chars().count() > 15000 {
+                    let cut: String = text.chars().take(15000).collect();
+                    format!("{cut}...\n\n(truncated, {} chars total)", text.chars().count())
+                } else {
+                    text
+                }
+            }
+            Err(e) => format!("[Error extracting {file_name}: {e}]"),
+        }
+    } else {
+        // Try as text
+        match String::from_utf8(data.to_vec()) {
+            Ok(text) => {
+                if text.chars().count() > 15000 {
+                    let cut: String = text.chars().take(15000).collect();
+                    format!("{cut}...\n\n(truncated, {} chars total)", text.chars().count())
+                } else {
+                    text
+                }
+            }
+            Err(_) => format!("[Could not read {file_name} as text]"),
+        }
+    }
+}
+
+/// Download a file from Telegram by file_id.
+async fn download_telegram_file(bot: &Bot, token: &str, file_id: &str) -> Option<(String, Vec<u8>)> {
+    let file = bot.get_file(file_id).await.ok()?;
+    let url = format!("https://api.telegram.org/file/bot{}/{}", token, file.path);
+    let resp = reqwest::get(&url).await.ok()?;
+    let bytes = resp.bytes().await.ok()?;
+    Some((file.path, bytes.to_vec()))
+}
+
+/// Handle a file that belongs to a media group — buffer it and schedule processing.
+async fn handle_media_group_file(
+    msg: &teloxide::types::Message,
+    bot: &Bot,
+    state: &Arc<AppState>,
+    user_id: u64,
+    group_id: &str,
+) -> ResponseResult<()> {
+    // Determine file_id and file_name
+    let (file_id, file_name) = if let Some(doc) = msg.document() {
+        let name = doc.file_name.as_deref().unwrap_or("unknown").to_string();
+        (doc.file.id.clone(), name)
+    } else if let Some(photos) = msg.photo() {
+        if let Some(photo) = photos.last() {
+            (photo.file.id.clone(), "photo.jpg".to_string())
+        } else {
+            return Ok(());
+        }
+    } else {
+        return Ok(());
+    };
+
+    // Download file
+    let (_, file_bytes) = match download_telegram_file(bot, &state.telegram_token, &file_id).await {
+        Some(r) => r,
+        None => {
+            error!("Failed to download media group file: {file_name}");
+            return Ok(());
+        }
+    };
+
+    // Save to disk
+    save_file_to_disk(user_id, &file_name, &file_bytes).await;
+
+    // Extract text
+    let extracted = extract_file_for_prompt(&file_name, &file_bytes);
+    info!("Media group file extracted: {file_name}, {} chars", extracted.len());
+
+    let caption = msg.caption().unwrap_or("").to_string();
+    let chat_id = msg.chat.id;
+
+    // Lock buffer, add file, get counter
+    let counter = {
+        let mut groups = state.media_groups.lock().await;
+        let entry = groups.entry(group_id.to_string()).or_insert_with(|| MediaGroupData {
+            files: Vec::new(),
+            caption: String::new(),
+            chat_id,
+            user_id,
+            counter: 0,
+        });
+        entry.files.push(MediaGroupFile {
+            file_name,
+            extracted,
+        });
+        // Use caption from whichever message has one
+        if !caption.is_empty() && entry.caption.is_empty() {
+            entry.caption = caption;
+        }
+        entry.counter += 1;
+        entry.counter
+    };
+
+    // Spawn delayed task
+    let state_clone = state.clone();
+    let bot_clone = bot.clone();
+    let group_id_owned = group_id.to_string();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // Check if counter still matches (no new files arrived)
+        let should_process = {
+            let groups = state_clone.media_groups.lock().await;
+            groups.get(&group_id_owned).map(|g| g.counter == counter).unwrap_or(false)
+        };
+
+        if should_process {
+            if let Err(e) = process_media_group(&group_id_owned, &bot_clone, &state_clone).await {
+                error!("Error processing media group {group_id_owned}: {e}");
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Process a completed media group: combine files and call agent once.
+async fn process_media_group(
+    group_id: &str,
+    bot: &Bot,
+    state: &AppState,
+) -> ResponseResult<()> {
+    // Remove group from buffer
+    let group_data = {
+        let mut groups = state.media_groups.lock().await;
+        groups.remove(group_id)
+    };
+
+    let group_data = match group_data {
+        Some(d) => d,
+        None => return Ok(()),
+    };
+
+    let file_count = group_data.files.len();
+    info!("Processing media group {group_id}: {file_count} files");
+
+    // Combine all files into one prompt
+    let mut combined = String::new();
+    for file in &group_data.files {
+        combined.push_str(&format!("=== File: {} ===\n", file.file_name));
+        combined.push_str(&file.extracted);
+        combined.push_str("\n\n");
+    }
+
+    let caption = if group_data.caption.is_empty() {
+        "Analyze these files".to_string()
+    } else {
+        group_data.caption.clone()
+    };
+    combined.push_str(&caption);
+
+    let file_names: Vec<&str> = group_data.files.iter().map(|f| f.file_name.as_str()).collect();
+    let history_text = format!("[Files: {}] {}", file_names.join(", "), caption);
+    let content = MessageContent::Text(combined);
+
+    run_agent_and_respond_inner(
+        group_data.chat_id,
+        bot,
+        state,
+        group_data.user_id,
+        &history_text,
+        content,
+        true,
+    )
+    .await
 }
 
 async fn handle_command(
