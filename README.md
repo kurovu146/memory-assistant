@@ -26,7 +26,6 @@ Private knowledge assistant - Telegram bot powered by Claude AI with persistent 
 | `memory_save` | Save a short fact to long-term memory |
 | `memory_search` | Search memories by keyword (FTS5) |
 | `memory_list` | List all saved memories |
-| `memory_delete` | Delete a memory by ID |
 | `knowledge_save` | Save a document/article/note (auto-extracts entities) |
 | `knowledge_search` | Full-text search across documents |
 | `entity_search` | Search knowledge graph for entities and their mentions |

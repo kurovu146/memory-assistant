@@ -237,9 +237,7 @@ fn strip_fake_command_blocks(text: &str) -> String {
 
 pub fn tool_icon(name: &str) -> &str {
     match name {
-        "web_search" => "🌐",
-        "web_fetch" => "📥",
-        "memory_save" | "memory_search" | "memory_list" | "memory_delete" => "🧠",
+"memory_save" | "memory_search" | "memory_list" => "🧠",
         "knowledge_save" | "knowledge_search" => "📚",
         "entity_search" => "🔗",
         "get_datetime" => "🕐",
