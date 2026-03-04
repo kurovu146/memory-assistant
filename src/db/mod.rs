@@ -285,28 +285,6 @@ impl Database {
         result
     }
 
-    /// Clear the active session for a user, forcing a new one on next message.
-    pub fn clear_session(&self, user_id: u64) {
-        let conn = self.conn.lock().unwrap();
-        let session_ids: Vec<String> = conn
-            .prepare("SELECT id FROM sessions WHERE user_id = ?1")
-            .and_then(|mut stmt| {
-                let rows = stmt.query_map(params![user_id as i64], |row| row.get(0))?;
-                rows.collect()
-            })
-            .unwrap_or_default();
-
-        for sid in &session_ids {
-            let _ = conn.execute(
-                "DELETE FROM session_messages WHERE session_id = ?1",
-                params![sid],
-            );
-        }
-        let _ = conn.execute(
-            "DELETE FROM sessions WHERE user_id = ?1",
-            params![user_id as i64],
-        );
-    }
 
     /// Append a message to the session history.
     pub fn append_message(&self, session_id: &str, role: &str, content: &str) {
