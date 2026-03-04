@@ -78,7 +78,6 @@ Keep responses concise (Telegram format).
     let commands = vec![
         BotCommand::new("start", "Bot info & status"),
         BotCommand::new("help", "Show available commands"),
-        BotCommand::new("new", "Start new conversation"),
         BotCommand::new("memory", "View saved memories"),
     ];
     if let Err(e) = bot.set_my_commands(commands).await {
@@ -646,7 +645,6 @@ async fn handle_command(
                 msg.chat.id,
                 "/start — Bot info\n\
                  /help — Show commands\n\
-                 /new — Start new conversation\n\
                  /memory — List saved memories\n\n\
                  Supported input:\n\
                  - Text messages\n\
@@ -658,11 +656,6 @@ async fn handle_command(
                  - file_list, grep, glob",
             )
             .await?;
-        }
-        "/new" => {
-            state.db.clear_session(user_id);
-            bot.send_message(msg.chat.id, "Session cleared. Starting fresh conversation.")
-                .await?;
         }
         "/memory" => {
             let facts = state.db.list_facts(user_id, None).unwrap_or_default();
