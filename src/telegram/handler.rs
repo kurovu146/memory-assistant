@@ -36,25 +36,35 @@ pub async fn run_bot(config: Config) {
         EmbeddingClient::new(key.clone(), config.voyage_model.clone())
     });
 
-    let base_prompt = "\
+    let embedding_status = if embedding_client.is_some() {
+        format!("Voyage AI ({}) — ACTIVE", config.voyage_model)
+    } else {
+        "DISABLED (no API key)".to_string()
+    };
+
+    let base_prompt = format!("\
 Private Second Brain — Telegram Knowledge Assistant.
 Always loyal to your owner. Never expose secrets in output.
 Vietnamese by default, English if user writes in English.
 Keep responses concise (Telegram format).
 
-## STRICT RAG — LUẬT TUYỆT ĐỐI
-NGHIÊM CẤM trả lời bất kỳ câu hỏi nào mà KHÔNG gọi tool search trước.
-Với MỌI câu hỏi (trừ chào hỏi, hỏi giờ, tính toán đơn giản), PHẢI gọi tool theo thứ tự:
+## SYSTEM INFO
+- Embedding: {embedding_status}
+- Knowledge DB: SQLite + FTS5 full-text search + semantic vector search (hybrid)
+- Documents: chunked (~500 chars), embedded, searchable by meaning
+- Files on disk: ~/documents/{{USER_ID}}/
+- Khi hỏi về hệ thống → dùng bash/knowledge_list để kiểm tra thực tế, KHÔNG đoán.
 
-Bước 1: GỌI memory_search + knowledge_search. Không được bỏ qua.
-Bước 2: Nếu bước 1 không đủ → TỰ ĐỘNG search file gốc (KHÔNG hỏi user):
-  a. file_list ~/documents/{{USER_ID}} để xem danh sách files.
-  b. Với PDF: bash \"pdftotext 'path/file.pdf' - | grep -n -i -C 3 'từ_khóa'\" để tìm + lấy số dòng.
-  c. Với text: grep pattern='từ_khóa' path='path/file.txt' context=3 để tìm.
-  d. Nếu cần thêm context: bash \"pdftotext 'path/file.pdf' - | sed -n 'X,Yp'\" hoặc file_read.
-Bước 3: Trả lời kèm TRÍCH DẪN: \"(Theo file: [tên_file], dòng X-Y)\" rồi quote nội dung.
+## AUTO-RAG CONTEXT
+Hệ thống TỰ ĐỘNG search knowledge base + memory cho mỗi câu hỏi. Kết quả nằm ở cuối system prompt trong section \"--- AUTO-RAG ---\".
 
-VI PHẠM nếu: trả lời mà không gọi tool nào, nói \"em đã search\" mà không thực sự gọi tool, hoặc nói \"không tìm thấy\" mà chưa xong bước 2.
+CÁCH DÙNG:
+1. Nếu AUTO-RAG tìm thấy kết quả → dùng NGAY, kèm trích dẫn \"(Theo [title], dòng X-Y)\".
+2. Nếu cần thêm chi tiết hoặc AUTO-RAG chưa đủ → gọi thêm tools: knowledge_search (từ khóa khác), file_list, grep, bash (pdftotext), file_read.
+3. NGHIÊM CẤM trả lời \"không tìm thấy\" hoặc \"em không có thông tin\" mà chưa gọi tools search bổ sung.
+4. Khi search file gốc trên disk: CHỈ search trong ~/documents/{{USER_ID}}. KHÔNG truy cập thư mục khác.
+   file_list ~/documents/{{USER_ID}}, pdftotext + grep -n cho PDF, grep cho text files.
+5. LUÔN trích dẫn: \"(Theo [tên file/document], dòng X-Y)\" rồi quote nội dung gốc.
 
 ## KHI NHẬN FILE / TÀI LIỆU
 1. Đọc và tóm tắt nội dung chính của file.
@@ -69,13 +79,12 @@ VI PHẠM nếu: trả lời mà không gọi tool nào, nói \"em đã search\"
 
 ## TOOLS
 - memory_save: facts ngắn gọn | knowledge_save: tài liệu/nội dung dài (entities tự động extract).
-- memory_search + knowledge_search: LUÔN search trước khi trả lời.
+- memory_search + knowledge_search: dùng khi cần search thêm ngoài AUTO-RAG.
 - knowledge_list: liệt kê tất cả documents đã lưu (dùng khi hỏi \"lưu gì rồi\", \"có bao nhiêu tài liệu\").
 - entity_search: dùng khi hỏi về người/dự án/tổ chức cụ thể.
 - file_read/file_write/file_list, grep, glob: thao tác file hệ thống.
 - bash: chỉ cho shell commands (git, cargo, npm, pdftotext...).
-- get_datetime: lấy ngày giờ hiện tại.\
-".to_string();
+- get_datetime: lấy ngày giờ hiện tại.");
 
     let state = Arc::new(AppState {
         pool,
@@ -582,7 +591,37 @@ async fn run_agent_and_respond_inner(
     // Build system prompt with memory
     let memory_ctx = state.db.build_memory_context(user_id);
     let user_prompt = state.base_prompt.replace("{USER_ID}", &user_id.to_string());
-    let system_prompt = skills::build_system_prompt(&user_prompt, &memory_ctx);
+    let mut system_prompt = skills::build_system_prompt(&user_prompt, &memory_ctx);
+
+    // Auto-RAG: pre-search knowledge + memory before LLM call
+    if !has_direct_content && !history_text.is_empty() {
+        let (knowledge_results, memory_results) = tokio::join!(
+            crate::tools::knowledge_search(
+                &state.db,
+                user_id,
+                history_text,
+                state.embedding_client.as_ref(),
+            ),
+            crate::tools::memory_search(&state.db, user_id, history_text),
+        );
+
+        let mut rag_ctx = String::new();
+        if !knowledge_results.starts_with("No documents")
+            && !knowledge_results.starts_with("Error")
+        {
+            rag_ctx.push_str("\n\n--- AUTO-RAG: KNOWLEDGE BASE ---\n");
+            rag_ctx.push_str(&knowledge_results);
+        }
+        if !memory_results.starts_with("No facts")
+            && !memory_results.starts_with("Error")
+        {
+            rag_ctx.push_str("\n\n--- AUTO-RAG: MEMORY ---\n");
+            rag_ctx.push_str(&memory_results);
+        }
+        if !rag_ctx.is_empty() {
+            system_prompt.push_str(&rag_ctx);
+        }
+    }
 
     // Load conversation history
     let session_id = state.db.get_or_create_session(user_id);
