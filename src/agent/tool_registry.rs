@@ -60,7 +60,7 @@ impl ToolRegistry {
                 }),
             ),
             tool_def("knowledge_search",
-                "Search the knowledge base for documents using full-text search.",
+                "Search the knowledge base using hybrid semantic + keyword search. Returns relevant chunks with line numbers for citation.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -68,6 +68,10 @@ impl ToolRegistry {
                     },
                     "required": ["query"]
                 }),
+            ),
+            tool_def("knowledge_list",
+                "List all saved documents in the knowledge base. Shows titles, sources, chunk counts, and save dates.",
+                json!({ "type": "object", "properties": {} }),
             ),
             tool_def("entity_search",
                 "Search for entities (people, projects, technologies, concepts) in the knowledge graph. Shows which documents and facts mention them.",
@@ -163,6 +167,7 @@ impl ToolRegistry {
         user_id: u64,
         db: &crate::db::Database,
         pool: &ProviderPool,
+        embedding_client: Option<&crate::tools::EmbeddingClient>,
     ) -> String {
         let args: serde_json::Value = serde_json::from_str(args_json).unwrap_or_default();
 
@@ -186,7 +191,7 @@ impl ToolRegistry {
                 let source = args["source"].as_str();
                 let tags = args["tags"].as_str();
 
-                match tools::knowledge_save(db, user_id, title, content, source, tags).await {
+                match tools::knowledge_save(db, user_id, title, content, source, tags, embedding_client).await {
                     Ok((doc_id, msg)) => {
                         // Auto-extract entities in background
                         let text = format!("{title}\n\n{content}");
@@ -204,7 +209,10 @@ impl ToolRegistry {
             }
             "knowledge_search" => {
                 let query = args["query"].as_str().unwrap_or("");
-                tools::knowledge_search(db, user_id, query).await
+                tools::knowledge_search(db, user_id, query, embedding_client).await
+            }
+            "knowledge_list" => {
+                tools::knowledge_list(db, user_id).await
             }
             "entity_search" => {
                 let query = args["query"].as_str().unwrap_or("");

@@ -36,6 +36,7 @@ impl AgentLoop {
         db: &Database,
         max_turns: usize,
         history: Vec<Message>,
+        embedding_client: Option<&crate::tools::EmbeddingClient>,
         on_progress: F,
     ) -> Result<AgentResult, String>
     where
@@ -110,6 +111,7 @@ impl AgentLoop {
                     user_id,
                     db,
                     pool,
+                    embedding_client,
                 )
                 .await;
 

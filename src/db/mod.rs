@@ -10,7 +10,7 @@ impl Database {
     pub fn open(path: &str) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;
 
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;")?;
 
         // Memory facts table
         conn.execute_batch(
@@ -87,6 +87,34 @@ impl Database {
                 context TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+            "
+        )?;
+
+        // Knowledge chunks (for semantic search)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS knowledge_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                doc_id INTEGER NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+                chunk_index INTEGER NOT NULL,
+                start_line INTEGER NOT NULL,
+                end_line INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                embedding BLOB,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(doc_id, chunk_index)
+            );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(
+                content, content='knowledge_chunks', content_rowid='id'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS knowledge_chunks_ai AFTER INSERT ON knowledge_chunks BEGIN
+                INSERT INTO knowledge_chunks_fts(rowid, content) VALUES (new.id, new.content);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS knowledge_chunks_ad AFTER DELETE ON knowledge_chunks BEGIN
+                INSERT INTO knowledge_chunks_fts(knowledge_chunks_fts, rowid, content) VALUES('delete', old.id, old.content);
+            END;
             "
         )?;
 
@@ -378,6 +406,143 @@ impl Database {
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// List all knowledge documents for a user. Returns (id, title, source, created_at, chunk_count).
+    pub fn list_documents(&self, user_id: u64) -> Result<Vec<(i64, String, Option<String>, String, i64)>, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.prepare(
+            "SELECT kd.id, kd.title, kd.source, kd.created_at,
+                    (SELECT COUNT(*) FROM knowledge_chunks kc WHERE kc.doc_id = kd.id) as chunk_count
+             FROM knowledge_documents kd
+             WHERE kd.user_id = ?1
+             ORDER BY kd.created_at DESC LIMIT 50"
+        )
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map(params![user_id as i64], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            })?;
+            rows.collect()
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    // --- Knowledge Chunks ---
+
+    pub fn save_chunks(
+        &self,
+        doc_id: i64,
+        chunks: &[(usize, usize, usize, &str)], // (chunk_index, start_line, end_line, content)
+    ) -> Result<Vec<i64>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut ids = Vec::with_capacity(chunks.len());
+        for &(chunk_index, start_line, end_line, content) in chunks {
+            conn.execute(
+                "INSERT OR REPLACE INTO knowledge_chunks (doc_id, chunk_index, start_line, end_line, content) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![doc_id, chunk_index as i64, start_line as i64, end_line as i64, content],
+            )
+            .map_err(|e| e.to_string())?;
+            ids.push(conn.last_insert_rowid());
+        }
+        Ok(ids)
+    }
+
+    pub fn update_chunk_embeddings(
+        &self,
+        chunk_ids: &[i64],
+        embeddings: &[Vec<u8>],
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        for (id, blob) in chunk_ids.iter().zip(embeddings.iter()) {
+            conn.execute(
+                "UPDATE knowledge_chunks SET embedding = ?1 WHERE id = ?2",
+                params![blob, id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// FTS5 search on knowledge_chunks. Returns (chunk_id, doc_id, title, content, start_line, end_line, source, rank).
+    pub fn search_chunks_fts(
+        &self,
+        user_id: u64,
+        query: &str,
+    ) -> Result<Vec<(i64, i64, String, String, i64, i64, Option<String>, f64)>, String> {
+        let conn = self.conn.lock().unwrap();
+        // Escape FTS5 special chars by wrapping in double quotes
+        let escaped = format!("\"{}\"", query.replace('"', "\"\""));
+        conn.prepare(
+            "SELECT kc.id, kc.doc_id, kd.title, kc.content, kc.start_line, kc.end_line, kd.source, fts.rank
+             FROM knowledge_chunks kc
+             JOIN knowledge_chunks_fts fts ON kc.id = fts.rowid
+             JOIN knowledge_documents kd ON kc.doc_id = kd.id
+             WHERE knowledge_chunks_fts MATCH ?1 AND kd.user_id = ?2
+             ORDER BY fts.rank LIMIT 20"
+        )
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map(params![escaped, user_id as i64], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            })?;
+            rows.collect()
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    /// Load all chunk embeddings for a user (for brute-force cosine similarity).
+    /// Returns (chunk_id, doc_id, title, content, start_line, end_line, source, embedding_bytes).
+    pub fn load_all_embeddings(
+        &self,
+        user_id: u64,
+    ) -> Result<Vec<(i64, i64, String, String, i64, i64, Option<String>, Vec<u8>)>, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.prepare(
+            "SELECT kc.id, kc.doc_id, kd.title, kc.content, kc.start_line, kc.end_line, kd.source, kc.embedding
+             FROM knowledge_chunks kc
+             JOIN knowledge_documents kd ON kc.doc_id = kd.id
+             WHERE kd.user_id = ?1 AND kc.embedding IS NOT NULL"
+        )
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map(params![user_id as i64], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            })?;
+            rows.collect()
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    /// Get document IDs that have no chunks yet (for migration).
+    pub fn get_unchunked_doc_ids(&self) -> Result<Vec<(i64, String)>, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.prepare(
+            "SELECT kd.id, kd.content FROM knowledge_documents kd
+             WHERE NOT EXISTS (SELECT 1 FROM knowledge_chunks kc WHERE kc.doc_id = kd.id)"
+        )
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?;
+            rows.collect()
+        })
+        .map_err(|e| e.to_string())
     }
 
     pub fn search_entities(

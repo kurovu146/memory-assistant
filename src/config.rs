@@ -6,6 +6,8 @@ pub struct Config {
     pub allowed_users: Vec<u64>,
     pub claude_keys: Vec<String>,
     pub max_agent_turns: usize,
+    pub voyage_api_key: Option<String>,
+    pub voyage_model: String,
 }
 
 impl Config {
@@ -27,6 +29,9 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(5),
+            voyage_api_key: env::var("VOYAGE_API_KEY").ok().filter(|s| !s.is_empty()),
+            voyage_model: env::var("VOYAGE_MODEL")
+                .unwrap_or_else(|_| "voyage-4-lite".to_string()),
         }
     }
 }

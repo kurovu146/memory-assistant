@@ -1,12 +1,4 @@
-mod agent;
-mod db;
-mod provider;
-mod skills;
-mod tools;
-mod config;
-mod telegram;
-
-use config::Config;
+use memory_assistant::config::Config;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -22,5 +14,5 @@ async fn main() {
     tracing::info!("Memory Assistant v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Claude keys: {}", config.claude_keys.len());
 
-    telegram::run_bot(config).await;
+    memory_assistant::telegram::run_bot(config).await;
 }

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use tracing::{info, warn};
 
@@ -8,6 +8,19 @@ const MAX_OUTPUT: usize = 30_000;
 const MAX_READ_BYTES: usize = 500_000;
 /// Command timeout in seconds.
 const CMD_TIMEOUT_SECS: u64 = 30;
+
+/// Expand `~` at the start of a path to $HOME.
+fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/kuro".to_string());
+        PathBuf::from(home).join(rest)
+    } else if path == "~" {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/kuro".to_string());
+        PathBuf::from(home)
+    } else {
+        PathBuf::from(path)
+    }
+}
 
 // ---------- bash ----------
 
@@ -80,7 +93,7 @@ pub async fn file_read(path: &str, offset: Option<usize>, limit: Option<usize>) 
         return "Error: path cannot be empty".into();
     }
 
-    let p = Path::new(path);
+    let p = expand_tilde(path);
     if !p.exists() {
         return format!("Error: file not found: {path}");
     }
@@ -89,7 +102,7 @@ pub async fn file_read(path: &str, offset: Option<usize>, limit: Option<usize>) 
     }
 
     // Check file size
-    match std::fs::metadata(p) {
+    match std::fs::metadata(&p) {
         Ok(meta) if meta.len() > MAX_READ_BYTES as u64 => {
             return format!(
                 "Error: file too large ({} bytes, max {}). Use offset/limit or grep instead.",
@@ -101,7 +114,7 @@ pub async fn file_read(path: &str, offset: Option<usize>, limit: Option<usize>) 
         _ => {}
     }
 
-    match tokio::fs::read_to_string(path).await {
+    match tokio::fs::read_to_string(&p).await {
         Ok(content) => {
             let lines: Vec<&str> = content.lines().collect();
             let start = offset.unwrap_or(0);
@@ -143,7 +156,7 @@ pub async fn file_write(path: &str, content: &str) -> String {
         return "Error: cannot write to this path for safety reasons".into();
     }
 
-    let p = Path::new(path);
+    let p = expand_tilde(path);
 
     // Create parent dirs if needed
     if let Some(parent) = p.parent() {
@@ -154,10 +167,10 @@ pub async fn file_write(path: &str, content: &str) -> String {
         }
     }
 
-    info!("file_write: {path} ({} bytes)", content.len());
+    info!("file_write: {} ({} bytes)", p.display(), content.len());
 
-    match tokio::fs::write(path, content).await {
-        Ok(()) => format!("Written {} bytes to {path}", content.len()),
+    match tokio::fs::write(&p, content).await {
+        Ok(()) => format!("Written {} bytes to {}", content.len(), p.display()),
         Err(e) => format!("Error writing file: {e}"),
     }
 }
@@ -167,14 +180,14 @@ pub async fn file_write(path: &str, content: &str) -> String {
 /// List directory contents with basic info (type, size).
 pub async fn file_list(path: &str, recursive: bool) -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/kuro".to_string());
-    let dir = if path.is_empty() { &home } else { path };
-    let p = Path::new(dir);
+    let expanded = if path.is_empty() { PathBuf::from(&home) } else { expand_tilde(path) };
+    let p = expanded.as_path();
 
     if !p.exists() {
-        return format!("Error: path not found: {dir}");
+        return format!("Error: path not found: {}", p.display());
     }
     if !p.is_dir() {
-        return format!("Error: {dir} is not a directory");
+        return format!("Error: {} is not a directory", p.display());
     }
 
     if recursive {

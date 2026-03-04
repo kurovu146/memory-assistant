@@ -10,6 +10,7 @@ use crate::config::Config;
 use crate::db::Database;
 use crate::provider::{Message, MessageContent, ProviderPool, Role};
 use crate::skills;
+use crate::tools::EmbeddingClient;
 
 use super::formatter;
 
@@ -19,6 +20,7 @@ struct AppState {
     config: Config,
     base_prompt: String,
     telegram_token: String,
+    embedding_client: Option<EmbeddingClient>,
 }
 
 pub async fn run_bot(config: Config) {
@@ -27,6 +29,12 @@ pub async fn run_bot(config: Config) {
     let pool = ProviderPool::new(config.claude_keys.clone());
 
     let db = Database::open("memory-assistant.db").expect("Failed to open database");
+
+    // Init embedding client if VOYAGE_API_KEY is set
+    let embedding_client = config.voyage_api_key.as_ref().map(|key| {
+        info!("Voyage AI embedding client initialized (model: {})", config.voyage_model);
+        EmbeddingClient::new(key.clone(), config.voyage_model.clone())
+    });
 
     let base_prompt = "\
 Private Second Brain — Telegram Knowledge Assistant.
@@ -38,7 +46,7 @@ Keep responses concise (Telegram format).
 1. PHẢI dùng memory_search + knowledge_search TRƯỚC khi trả lời bất kỳ câu hỏi nào về thông tin đã lưu.
 2. CHỈ trả lời dựa trên dữ liệu tìm được trong memory/knowledge. KHÔNG dùng kiến thức chung của model.
 3. Nếu không tìm thấy → nói rõ: \"Em không tìm thấy thông tin này trong dữ liệu anh đã cung cấp.\"
-4. Khi trả lời, trích nguồn: \"(Theo document: [title])\" hoặc \"(Theo fact #ID)\".
+4. Khi trả lời, trích nguồn: \"(Theo document: [title], dòng X-Y)\" hoặc \"(Theo fact #ID)\".
 5. Ngoại lệ: câu hỏi chung (hỏi giờ, tính toán, giải thích khái niệm) thì được dùng kiến thức chung, nhưng ghi rõ đây là kiến thức chung, không phải từ dữ liệu cá nhân.
 
 ## KHI NHẬN FILE / TÀI LIỆU
@@ -55,6 +63,7 @@ Keep responses concise (Telegram format).
 ## TOOLS
 - memory_save: facts ngắn gọn | knowledge_save: tài liệu/nội dung dài (entities tự động extract).
 - memory_search + knowledge_search: LUÔN search trước khi trả lời.
+- knowledge_list: liệt kê tất cả documents đã lưu (dùng khi hỏi \"lưu gì rồi\", \"có bao nhiêu tài liệu\").
 - entity_search: dùng khi hỏi về người/dự án/tổ chức cụ thể.
 - file_read/file_write/file_list, grep, glob: thao tác file hệ thống.
 - bash: chỉ cho shell commands (git, cargo, npm...).
@@ -67,7 +76,16 @@ Keep responses concise (Telegram format).
         config: config.clone(),
         base_prompt,
         telegram_token: config.telegram_bot_token.clone(),
+        embedding_client,
     });
+
+    // Migrate existing documents: chunk + embed unchunked docs
+    {
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            migrate_unchunked_docs(&state_clone).await;
+        });
+    }
 
     info!(
         "Memory Assistant bot started. Allowed users: {:?}",
@@ -561,6 +579,7 @@ async fn run_agent_and_respond_inner(
         &state.db,
         state.config.max_agent_turns,
         history,
+        state.embedding_client.as_ref(),
         on_progress,
     )
     .await;
@@ -678,4 +697,68 @@ async fn handle_command(
         }
     }
     Ok(())
+}
+
+/// Migrate existing documents that don't have chunks yet.
+async fn migrate_unchunked_docs(state: &AppState) {
+    use crate::tools::embedding::embedding_to_bytes;
+    use crate::tools::knowledge::chunk_document;
+
+    let docs = match state.db.get_unchunked_doc_ids() {
+        Ok(d) => d,
+        Err(e) => {
+            error!("Migration: failed to get unchunked docs: {e}");
+            return;
+        }
+    };
+
+    if docs.is_empty() {
+        return;
+    }
+
+    info!("Migration: chunking {} existing documents", docs.len());
+
+    for (doc_id, content) in &docs {
+        let chunks = chunk_document(content);
+        let chunk_data: Vec<(usize, usize, usize, &str)> = chunks
+            .iter()
+            .map(|c| (c.chunk_index, c.start_line, c.end_line, c.content.as_str()))
+            .collect();
+
+        let chunk_ids = match state.db.save_chunks(*doc_id, &chunk_data) {
+            Ok(ids) => ids,
+            Err(e) => {
+                error!("Migration: failed to save chunks for doc {doc_id}: {e}");
+                continue;
+            }
+        };
+
+        // Embed if client available
+        if let Some(client) = &state.embedding_client {
+            let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+            for (batch_start, batch_ids) in chunk_ids.chunks(128).enumerate() {
+                let start = batch_start * 128;
+                let end = (start + 128).min(texts.len());
+                let batch_texts = &texts[start..end];
+
+                match client.embed_batch(batch_texts, "document").await {
+                    Ok(embeddings) => {
+                        let blobs: Vec<Vec<u8>> =
+                            embeddings.iter().map(|e| embedding_to_bytes(e)).collect();
+                        if let Err(e) = state.db.update_chunk_embeddings(batch_ids, &blobs) {
+                            error!("Migration: failed to save embeddings: {e}");
+                        }
+                    }
+                    Err(e) => {
+                        error!("Migration: embedding failed for doc {doc_id}: {e}");
+                    }
+                }
+
+                // Small delay to respect rate limits
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+
+    info!("Migration: completed chunking {} documents", docs.len());
 }
