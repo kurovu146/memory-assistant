@@ -17,8 +17,9 @@ use crate::tools::EmbeddingClient;
 use super::formatter;
 
 struct MediaGroupFile {
+    file_id: String,
     file_name: String,
-    extracted: String,
+    is_image: bool,
 }
 
 struct MediaGroupData {
@@ -248,6 +249,7 @@ async fn handle_message(
 
     // Check for media group (multiple files sent at once)
     if let Some(group_id) = msg.media_group_id() {
+        info!("Media group detected: group_id={group_id}, has_doc={}, has_photo={}", msg.document().is_some(), msg.photo().is_some());
         if msg.document().is_some() || msg.photo().is_some() {
             return handle_media_group_file(&msg, &bot, &state, user_id, group_id).await;
         }
@@ -790,13 +792,17 @@ async fn handle_media_group_file(
     user_id: u64,
     group_id: &str,
 ) -> ResponseResult<()> {
-    // Determine file_id and file_name
-    let (file_id, file_name) = if let Some(doc) = msg.document() {
+    // Determine file_id, file_name, is_image — NO download here (instant)
+    let (file_id, file_name, is_image) = if let Some(doc) = msg.document() {
         let name = doc.file_name.as_deref().unwrap_or("unknown").to_string();
-        (doc.file.id.clone(), name)
+        let lower = name.to_lowercase();
+        let img = lower.ends_with(".jpg") || lower.ends_with(".jpeg")
+            || lower.ends_with(".png") || lower.ends_with(".gif")
+            || lower.ends_with(".webp");
+        (doc.file.id.clone(), name, img)
     } else if let Some(photos) = msg.photo() {
         if let Some(photo) = photos.last() {
-            (photo.file.id.clone(), "photo.jpg".to_string())
+            (photo.file.id.clone(), "photo.jpg".to_string(), true)
         } else {
             return Ok(());
         }
@@ -804,26 +810,12 @@ async fn handle_media_group_file(
         return Ok(());
     };
 
-    // Download file
-    let (_, file_bytes) = match download_telegram_file(bot, &state.telegram_token, &file_id).await {
-        Some(r) => r,
-        None => {
-            error!("Failed to download media group file: {file_name}");
-            return Ok(());
-        }
-    };
-
-    // Save to disk
-    save_file_to_disk(user_id, &file_name, &file_bytes).await;
-
-    // Extract text
-    let extracted = extract_file_for_prompt(&file_name, &file_bytes);
-    info!("Media group file extracted: {file_name}, {} chars", extracted.len());
+    info!("Media group file buffered: {file_name} (group={group_id})");
 
     let caption = msg.caption().unwrap_or("").to_string();
     let chat_id = msg.chat.id;
 
-    // Lock buffer, add file, get counter
+    // Lock buffer, add file info (no download yet), get counter
     let counter = {
         let mut groups = state.media_groups.lock().await;
         let entry = groups.entry(group_id.to_string()).or_insert_with(|| MediaGroupData {
@@ -834,10 +826,10 @@ async fn handle_media_group_file(
             counter: 0,
         });
         entry.files.push(MediaGroupFile {
+            file_id,
             file_name,
-            extracted,
+            is_image,
         });
-        // Use caption from whichever message has one
         if !caption.is_empty() && entry.caption.is_empty() {
             entry.caption = caption;
         }
@@ -888,11 +880,39 @@ async fn process_media_group(
     let file_count = group_data.files.len();
     info!("Processing media group {group_id}: {file_count} files");
 
-    // Combine all files into one prompt
+    // Download + extract all files now (after all files have been buffered)
     let mut combined = String::new();
+    let mut file_names = Vec::new();
+
     for file in &group_data.files {
+        file_names.push(file.file_name.clone());
+
+        // Download from Telegram
+        let file_bytes = match download_telegram_file(bot, &state.telegram_token, &file.file_id).await {
+            Some((_, bytes)) => bytes,
+            None => {
+                error!("Failed to download media group file: {}", file.file_name);
+                combined.push_str(&format!("=== File: {} ===\n[Download failed]\n\n", file.file_name));
+                continue;
+            }
+        };
+
+        // Save to disk
+        let saved_path = save_file_to_disk(group_data.user_id, &file.file_name, &file_bytes).await;
+
+        // Extract content or reference image path
         combined.push_str(&format!("=== File: {} ===\n", file.file_name));
-        combined.push_str(&file.extracted);
+        if file.is_image {
+            let path = saved_path
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| {
+                    let home = std::env::var("HOME").unwrap_or_default();
+                    format!("{}/documents/{}/{}", home, group_data.user_id, file.file_name)
+                });
+            combined.push_str(&format!("[Image file — use image_read tool with path \"{path}\" to view and analyze this image]"));
+        } else {
+            combined.push_str(&extract_file_for_prompt(&file.file_name, &file_bytes));
+        }
         combined.push_str("\n\n");
     }
 
@@ -903,7 +923,6 @@ async fn process_media_group(
     };
     combined.push_str(&caption);
 
-    let file_names: Vec<&str> = group_data.files.iter().map(|f| f.file_name.as_str()).collect();
     let history_text = format!("[Files: {}] {}", file_names.join(", "), caption);
     let content = MessageContent::Text(combined);
 
