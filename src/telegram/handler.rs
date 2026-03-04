@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use teloxide::prelude::*;
@@ -109,6 +110,77 @@ async fn safe_edit(bot: &Bot, chat_id: ChatId, msg_id: i32, text: &str) {
     }
 }
 
+/// Save uploaded file to ~/documents/{user_id}/{file_name}.
+/// Creates directories if needed. Skips if identical content already saved.
+/// Adds _1, _2... suffix if same name but different content.
+async fn save_file_to_disk(user_id: u64, file_name: &str, data: &[u8]) -> Option<PathBuf> {
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return None,
+    };
+    let dir = PathBuf::from(&home).join("documents").join(user_id.to_string());
+
+    // Dedup: hash content, use .checksums/ dir with atomic create_new
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    let hash_hex = format!("{:016x}", hasher.finish());
+
+    let checksums_dir = dir.join(".checksums");
+    if let Err(e) = tokio::fs::create_dir_all(&checksums_dir).await {
+        error!("Failed to create checksums dir: {e}");
+        return None;
+    }
+
+    match tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(checksums_dir.join(&hash_hex))
+        .await
+    {
+        Ok(_) => {} // New content, proceed to save
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            info!("Duplicate file skipped: {file_name} (hash {hash_hex})");
+            return None;
+        }
+        Err(_) => {} // Can't check, save anyway
+    }
+
+    let path = Path::new(file_name);
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+
+    let mut dest = dir.join(file_name);
+    let mut counter = 1u32;
+    loop {
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&dest)
+            .await
+        {
+            Ok(file) => {
+                use tokio::io::AsyncWriteExt;
+                let mut file = file;
+                if let Err(e) = file.write_all(data).await {
+                    error!("Failed to write file {}: {e}", dest.display());
+                    return None;
+                }
+                info!("File saved: {}", dest.display());
+                return Some(dest);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                dest = dir.join(format!("{stem}_{counter}{ext}"));
+                counter += 1;
+            }
+            Err(e) => {
+                error!("Failed to create file {}: {e}", dest.display());
+                return None;
+            }
+        }
+    }
+}
+
 async fn handle_message(
     msg: teloxide::types::Message,
     bot: Bot,
@@ -188,6 +260,10 @@ async fn handle_photo(
             return Ok(());
         }
     };
+
+    // Save to disk
+    let photo_name = file_path.rsplit('/').next().unwrap_or("photo.jpg");
+    save_file_to_disk(user_id, photo_name, &image_bytes).await;
 
     // Detect media type from file extension
     let media_type = if file_path.ends_with(".png") {
@@ -296,6 +372,9 @@ async fn handle_document(
             return Ok(());
         }
     };
+
+    // Save to disk
+    save_file_to_disk(user_id, file_name, &file_bytes).await;
 
     if is_image {
         // Handle as image
