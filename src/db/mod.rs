@@ -223,17 +223,6 @@ impl Database {
         ctx
     }
 
-    pub fn delete_fact(&self, user_id: u64, fact_id: i64) -> Result<bool, String> {
-        let conn = self.conn.lock().unwrap();
-        let affected = conn
-            .execute(
-                "DELETE FROM memory_facts WHERE id = ?1 AND user_id = ?2",
-                params![fact_id, user_id as i64],
-            )
-            .map_err(|e| e.to_string())?;
-        Ok(affected > 0)
-    }
-
     // --- Conversation history ---
 
     /// Get or create the active session for a user. Returns session_id.
