@@ -1,4 +1,4 @@
-use std::env;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -8,39 +8,58 @@ pub struct Config {
     pub max_agent_turns: usize,
     pub voyage_api_key: Option<String>,
     pub voyage_model: String,
+    pub openai_api_key: Option<String>,
+    pub gemini_api_key: Option<String>,
 }
 
 impl Config {
     pub fn from_env() -> Self {
-        // Try .env in current directory first, then fallback to hardcoded VPS path
-        dotenvy::dotenv_override().ok();
+        let env = load_dotenv();
 
         Self {
-            telegram_bot_token: env::var("TELEGRAM_BOT_TOKEN")
-                .expect("TELEGRAM_BOT_TOKEN is required"),
-            allowed_users: env::var("TELEGRAM_ALLOWED_USERS")
-                .unwrap_or_default()
-                .split(',')
-                .filter(|s| !s.is_empty())
-                .filter_map(|s| s.trim().parse().ok())
-                .collect(),
-            claude_keys: parse_keys("CLAUDE_API_KEYS"),
-            max_agent_turns: env::var("MAX_AGENT_TURNS")
-                .ok()
+            telegram_bot_token: env
+                .get("TELEGRAM_BOT_TOKEN")
+                .cloned()
+                .expect("TELEGRAM_BOT_TOKEN is required in .env"),
+            allowed_users: env
+                .get("TELEGRAM_ALLOWED_USERS")
+                .map(|s| {
+                    s.split(',')
+                        .filter(|s| !s.is_empty())
+                        .filter_map(|s| s.trim().parse().ok())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            claude_keys: parse_keys(&env, "CLAUDE_API_KEYS"),
+            max_agent_turns: env
+                .get("MAX_AGENT_TURNS")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(5),
-            voyage_api_key: env::var("VOYAGE_API_KEY").ok().filter(|s| !s.is_empty()),
-            voyage_model: env::var("VOYAGE_MODEL")
-                .unwrap_or_else(|_| "voyage-4-lite".to_string()),
+            voyage_api_key: env.get("VOYAGE_API_KEY").cloned().filter(|s| !s.is_empty()),
+            voyage_model: env
+                .get("VOYAGE_MODEL")
+                .cloned()
+                .unwrap_or_else(|| "voyage-4-lite".to_string()),
+            openai_api_key: env.get("OPENAI_API_KEY").cloned().filter(|s| !s.is_empty()),
+            gemini_api_key: env.get("GEMINI_API_KEY").cloned().filter(|s| !s.is_empty()),
         }
     }
 }
 
-fn parse_keys(env_var: &str) -> Vec<String> {
-    env::var(env_var)
+/// Load .env file into a HashMap without polluting process environment.
+fn load_dotenv() -> HashMap<String, String> {
+    dotenvy::dotenv_iter()
+        .map(|iter| iter.filter_map(|r| r.ok()).collect())
         .unwrap_or_default()
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
+}
+
+fn parse_keys(env: &HashMap<String, String>, key: &str) -> Vec<String> {
+    env.get(key)
+        .map(|s| {
+            s.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }

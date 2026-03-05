@@ -38,7 +38,7 @@ pub async fn extract_and_link_entities(
     }];
 
     // Call Claude with no tools — just text extraction
-    let response = match pool.chat(&messages, &[]).await {
+    let response = match pool.chat(&messages, &[], crate::provider::model_registry::DEFAULT_MODEL).await {
         Ok((resp, _provider)) => resp,
         Err(e) => {
             warn!("Entity extraction failed: {e}");

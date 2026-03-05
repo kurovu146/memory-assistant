@@ -43,7 +43,11 @@ struct AppState {
 pub async fn run_bot(config: Config) {
     let bot = Bot::new(&config.telegram_bot_token);
 
-    let pool = ProviderPool::new(config.claude_keys.clone());
+    let pool = ProviderPool::new(
+        config.claude_keys.clone(),
+        config.openai_api_key.clone(),
+        config.gemini_api_key.clone(),
+    );
 
     let db = Database::open("memory-assistant.db").expect("Failed to open database");
 
@@ -131,6 +135,7 @@ CÁCH DÙNG:
         BotCommand::new("start", "Bot info & status"),
         BotCommand::new("help", "Show available commands"),
         BotCommand::new("memory", "View saved memories"),
+        BotCommand::new("model", "Switch AI model"),
     ];
     if let Err(e) = bot.set_my_commands(commands).await {
         error!("Failed to set bot commands: {e}");
@@ -614,6 +619,9 @@ async fn run_agent_and_respond_inner(
         });
     };
 
+    // Load user's preferred model
+    let model = state.db.get_user_model(user_id);
+
     // Build system prompt with memory
     let memory_ctx = state.db.build_memory_context(user_id);
     let user_prompt = state.base_prompt.replace("{USER_ID}", &user_id.to_string());
@@ -678,6 +686,7 @@ async fn run_agent_and_respond_inner(
         state.config.max_agent_turns,
         history,
         state.embedding_client.as_ref(),
+        &model,
         on_progress,
     )
     .await;
@@ -965,7 +974,8 @@ async fn handle_command(
                 msg.chat.id,
                 "/start — Bot info\n\
                  /help — Show commands\n\
-                 /memory — List saved memories\n\n\
+                 /memory — List saved memories\n\
+                 /model — Switch AI model\n\n\
                  Supported input:\n\
                  - Text messages\n\
                  - Photos (with optional caption)\n\
@@ -992,11 +1002,96 @@ async fn handle_command(
                 }
             }
         }
+        "/model" => {
+            handle_model_command(msg, bot, state, text, user_id).await?;
+        }
         _ => {
             bot.send_message(msg.chat.id, "Unknown command. /help")
                 .await?;
         }
     }
+    Ok(())
+}
+
+async fn handle_model_command(
+    msg: &teloxide::types::Message,
+    bot: &Bot,
+    state: &AppState,
+    text: &str,
+    user_id: u64,
+) -> ResponseResult<()> {
+    use crate::provider::model_registry;
+
+    let arg = text.strip_prefix("/model").unwrap_or("").trim();
+
+    if arg.is_empty() {
+        // Show current model + list available
+        let current = state.db.get_user_model(user_id);
+        let current_info = model_registry::resolve_model(&current);
+        let current_label = current_info.map(|m| m.label).unwrap_or("Unknown");
+
+        let mut lines = vec![format!("Current: *{current_label}* (`{current}`)\n")];
+        lines.push("Available models:".to_string());
+        for m in model_registry::list_models() {
+            let active = if m.id == current { " ✓" } else { "" };
+            let key_ok = state.pool.has_key_for(m.provider);
+            let status = if key_ok { "" } else { " ⚠️ no key" };
+            lines.push(format!("`{}` — {}{}{}", m.shortcut, m.label, active, status));
+        }
+        lines.push("\nUsage: `/model <shortcut>`".to_string());
+
+        #[allow(deprecated)]
+        let _ = bot
+            .send_message(msg.chat.id, lines.join("\n"))
+            .parse_mode(ParseMode::Markdown)
+            .await;
+    } else {
+        // Set model
+        match model_registry::resolve_model(arg) {
+            Some(model_info) => {
+                // Check if API key is configured
+                if !state.pool.has_key_for(model_info.provider) {
+                    let key_name = match model_info.provider {
+                        model_registry::ProviderType::OpenAI => "OPENAI_API_KEY",
+                        model_registry::ProviderType::Gemini => "GEMINI_API_KEY",
+                        model_registry::ProviderType::Claude => "CLAUDE_API_KEYS",
+                    };
+                    bot.send_message(
+                        msg.chat.id,
+                        format!(
+                            "Cannot use {}: `{key_name}` not configured.",
+                            model_info.label
+                        ),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+
+                state.db.set_user_model(user_id, model_info.id);
+                bot.send_message(
+                    msg.chat.id,
+                    format!("Model switched to *{}* (`{}`)", model_info.label, model_info.id),
+                )
+                .parse_mode(ParseMode::Markdown)
+                .await?;
+            }
+            None => {
+                let shortcuts: Vec<&str> = model_registry::list_models()
+                    .iter()
+                    .map(|m| m.shortcut)
+                    .collect();
+                bot.send_message(
+                    msg.chat.id,
+                    format!(
+                        "Unknown model: `{arg}`\nAvailable: {}",
+                        shortcuts.join(", ")
+                    ),
+                )
+                .await?;
+            }
+        }
+    }
+
     Ok(())
 }
 

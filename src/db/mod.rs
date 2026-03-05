@@ -118,6 +118,15 @@ impl Database {
             "
         )?;
 
+        // User preferences
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS user_preferences (
+                user_id INTEGER PRIMARY KEY,
+                model TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );"
+        )?;
+
         // Conversation sessions
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS sessions (
@@ -543,6 +552,27 @@ impl Database {
             rows.collect()
         })
         .map_err(|e| e.to_string())
+    }
+
+    // --- User Preferences ---
+
+    pub fn get_user_model(&self, user_id: u64) -> String {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT model FROM user_preferences WHERE user_id = ?1",
+            params![user_id as i64],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| crate::provider::model_registry::DEFAULT_MODEL.to_string())
+    }
+
+    pub fn set_user_model(&self, user_id: u64, model_id: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "INSERT INTO user_preferences (user_id, model, updated_at) VALUES (?1, ?2, datetime('now'))
+             ON CONFLICT(user_id) DO UPDATE SET model = ?2, updated_at = datetime('now')",
+            params![user_id as i64, model_id],
+        );
     }
 
     pub fn search_entities(

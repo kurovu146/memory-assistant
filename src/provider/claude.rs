@@ -6,14 +6,12 @@ use super::types::*;
 
 pub struct ClaudeProvider {
     client: Client,
-    model: String,
 }
 
 impl ClaudeProvider {
     pub fn new() -> Self {
         Self {
             client: Client::new(),
-            model: "claude-haiku-4-5-20251001".into(),
         }
     }
 
@@ -22,11 +20,12 @@ impl ClaudeProvider {
         messages: &[Message],
         tools: &[ToolDef],
         api_key: &str,
+        model: &str,
     ) -> Result<LlmResponse, ProviderError> {
         let (system_prompt, api_messages) = build_claude_messages(messages);
 
         let mut body = json!({
-            "model": self.model,
+            "model": model,
             "max_tokens": 4096,
             "messages": api_messages,
             "cache_control": { "type": "ephemeral" },
@@ -40,7 +39,7 @@ impl ClaudeProvider {
             body["tools"] = build_claude_tools(tools);
         }
 
-        debug!("Claude API request: model={}", self.model);
+        debug!("Claude API request: model={model}");
 
         let resp = self
             .client
@@ -161,6 +160,51 @@ fn build_claude_messages(messages: &[Message]) -> (String, Vec<serde_json::Value
                 });
 
                 // Check if we can merge with previous user message containing tool_results
+                let should_merge = api_messages.last().map_or(false, |last| {
+                    last["role"] == "user"
+                        && last["content"].is_array()
+                        && last["content"]
+                            .as_array()
+                            .map_or(false, |arr| {
+                                arr.first()
+                                    .map_or(false, |b| b["type"] == "tool_result")
+                            })
+                });
+
+                if should_merge {
+                    if let Some(last) = api_messages.last_mut() {
+                        if let Some(arr) = last["content"].as_array_mut() {
+                            arr.push(result_block);
+                        }
+                    }
+                } else {
+                    api_messages.push(json!({
+                        "role": "user",
+                        "content": [result_block],
+                    }));
+                }
+            }
+            // Tool result with image → tool_result with image content block
+            (Role::Tool, MessageContent::ToolResultWithImage { tool_call_id, text, image_base64, media_type, .. }) => {
+                let result_block = json!({
+                    "type": "tool_result",
+                    "tool_use_id": tool_call_id,
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": image_base64,
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": text,
+                        }
+                    ],
+                });
+
                 let should_merge = api_messages.last().map_or(false, |last| {
                     last["role"] == "user"
                         && last["content"].is_array()

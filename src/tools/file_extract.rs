@@ -5,8 +5,12 @@ use std::io::Cursor;
 /// Extract text from a PDF file's bytes.
 /// Tries pdf-extract crate first, falls back to pdftotext (poppler) if empty.
 pub fn extract_pdf(data: &[u8]) -> Result<String, String> {
-    // Try pdf-extract crate first
-    if let Ok(text) = pdf_extract::extract_text_from_mem(data) {
+    // Try pdf-extract crate first (catch_unwind: it panics on unsupported encodings)
+    let data_owned = data.to_vec();
+    let crate_result = std::panic::catch_unwind(|| {
+        pdf_extract::extract_text_from_mem(&data_owned)
+    });
+    if let Ok(Ok(text)) = crate_result {
         let trimmed = text.trim().to_string();
         if !trimmed.is_empty() {
             return Ok(trimmed);

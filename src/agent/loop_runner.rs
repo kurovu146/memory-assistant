@@ -3,7 +3,7 @@ use tracing::{debug, info, warn};
 use crate::db::Database;
 use crate::provider::{Message, MessageContent, ProviderPool, Role};
 
-use super::tool_registry::ToolRegistry;
+use super::tool_registry::{ToolOutput, ToolRegistry};
 
 /// Progress updates sent during agent execution.
 pub enum AgentProgress {
@@ -37,6 +37,7 @@ impl AgentLoop {
         max_turns: usize,
         history: Vec<Message>,
         embedding_client: Option<&crate::tools::EmbeddingClient>,
+        model: &str,
         on_progress: F,
     ) -> Result<AgentResult, String>
     where
@@ -61,7 +62,7 @@ impl AgentLoop {
             debug!("Agent turn {}/{}", turn + 1, max_turns);
             on_progress(AgentProgress::Thinking);
 
-            let (response, provider_name) = pool.chat(&messages, &tools).await
+            let (response, provider_name) = pool.chat(&messages, &tools, model).await
                 .map_err(|e| format!("LLM error: {e}"))?;
 
             last_provider = provider_name;
@@ -105,7 +106,7 @@ impl AgentLoop {
                 tools_used.push(tool_name.clone());
                 on_progress(AgentProgress::ToolUse(tool_name.clone()));
 
-                let result = ToolRegistry::execute(
+                let output = ToolRegistry::execute(
                     tool_name,
                     &tc.function.arguments,
                     user_id,
@@ -115,13 +116,26 @@ impl AgentLoop {
                 )
                 .await;
 
-                messages.push(Message {
-                    role: Role::Tool,
-                    content: MessageContent::ToolResult {
+                let content = match output {
+                    ToolOutput::Text(text) => MessageContent::ToolResult {
                         tool_call_id: tc.id.clone(),
                         name: tool_name.clone(),
-                        content: result,
+                        content: text,
                     },
+                    ToolOutput::Image { text, image_base64, media_type } => {
+                        MessageContent::ToolResultWithImage {
+                            tool_call_id: tc.id.clone(),
+                            name: tool_name.clone(),
+                            text,
+                            image_base64,
+                            media_type,
+                        }
+                    }
+                };
+
+                messages.push(Message {
+                    role: Role::Tool,
+                    content,
                 });
             }
         }

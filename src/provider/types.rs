@@ -32,6 +32,13 @@ pub enum MessageContent {
         name: String,
         content: String,
     },
+    ToolResultWithImage {
+        tool_call_id: String,
+        name: String,
+        text: String,
+        image_base64: String,
+        media_type: String,
+    },
     AssistantWithToolCalls {
         text: Option<String>,
         tool_calls: Vec<ToolCall>,
@@ -44,6 +51,7 @@ impl MessageContent {
             MessageContent::Text(s) => s,
             MessageContent::ImageWithText { text, .. } => text,
             MessageContent::ToolResult { content, .. } => content,
+            MessageContent::ToolResultWithImage { text, .. } => text,
             MessageContent::AssistantWithToolCalls { text, .. } => {
                 text.as_deref().unwrap_or("")
             }

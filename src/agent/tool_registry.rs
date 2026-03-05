@@ -3,6 +3,16 @@ use serde_json::json;
 use crate::provider::{ToolDef, FunctionDef, ProviderPool};
 use crate::tools;
 
+/// Output from a tool execution — either plain text or text + image.
+pub enum ToolOutput {
+    Text(String),
+    Image {
+        text: String,
+        image_base64: String,
+        media_type: String,
+    },
+}
+
 /// Registry of all available tools with definitions and executor
 pub struct ToolRegistry;
 
@@ -157,6 +167,16 @@ impl ToolRegistry {
                     "required": ["pattern"]
                 }),
             ),
+            tool_def("image_read",
+                "Read an image file from disk and analyze it using vision. Use this for image files (jpg, png, gif, webp) stored in ~/documents/. Returns the image for visual analysis.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Path to the image file" }
+                    },
+                    "required": ["path"]
+                }),
+            ),
         ]
     }
 
@@ -168,10 +188,10 @@ impl ToolRegistry {
         db: &crate::db::Database,
         pool: &ProviderPool,
         embedding_client: Option<&crate::tools::EmbeddingClient>,
-    ) -> String {
+    ) -> ToolOutput {
         let args: serde_json::Value = serde_json::from_str(args_json).unwrap_or_default();
 
-        match tool_name {
+        let text_result = match tool_name {
             "memory_save" => {
                 let fact = args["fact"].as_str().unwrap_or("");
                 let category = args["category"].as_str().unwrap_or("general");
@@ -252,7 +272,70 @@ impl ToolRegistry {
                 let path = args["path"].as_str();
                 tools::glob_search(pattern, path).await
             }
+            "image_read" => {
+                let path = args["path"].as_str().unwrap_or("");
+                return Self::read_image(path).await;
+            }
             _ => format!("Unknown tool: {tool_name}"),
+        };
+
+        ToolOutput::Text(text_result)
+    }
+
+    /// Read an image file from disk, return as ToolOutput::Image for vision analysis.
+    async fn read_image(path: &str) -> ToolOutput {
+        let p = if path.starts_with('~') {
+            let home = std::env::var("HOME").unwrap_or_default();
+            std::path::PathBuf::from(home).join(&path[2..])
+        } else {
+            std::path::PathBuf::from(path)
+        };
+
+        if !p.exists() {
+            return ToolOutput::Text(format!("Error: file not found: {path}"));
+        }
+
+        // Check file size (max 20MB for Claude vision)
+        match std::fs::metadata(&p) {
+            Ok(meta) if meta.len() > 20 * 1024 * 1024 => {
+                return ToolOutput::Text(format!(
+                    "Error: image too large ({} bytes, max 20MB)",
+                    meta.len()
+                ));
+            }
+            Err(e) => return ToolOutput::Text(format!("Error: {e}")),
+            _ => {}
+        }
+
+        let bytes = match tokio::fs::read(&p).await {
+            Ok(b) => b,
+            Err(e) => return ToolOutput::Text(format!("Error reading file: {e}")),
+        };
+
+        // Detect media type from extension
+        let ext = p.extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let media_type = match ext.as_str() {
+            "png" => "image/png",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "jpg" | "jpeg" => "image/jpeg",
+            _ => {
+                return ToolOutput::Text(format!(
+                    "Error: unsupported image format: .{ext}. Supported: jpg, png, gif, webp"
+                ));
+            }
+        };
+
+        use base64::Engine;
+        let image_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let file_name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+
+        ToolOutput::Image {
+            text: format!("Image file: {file_name} ({} bytes)", bytes.len()),
+            image_base64,
+            media_type: media_type.to_string(),
         }
     }
 }
