@@ -233,6 +233,17 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
 
+    pub fn delete_fact(&self, user_id: u64, fact_id: i64) -> Result<bool, String> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "DELETE FROM memory_facts WHERE id = ?1 AND user_id = ?2",
+                params![fact_id, user_id as i64],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(rows > 0)
+    }
+
     // --- Memory context for system prompt ---
 
     pub fn build_memory_context(&self, user_id: u64) -> String {

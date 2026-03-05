@@ -55,6 +55,16 @@ impl ToolRegistry {
                     }
                 }),
             ),
+            tool_def("memory_delete",
+                "Delete a fact from long-term memory by its ID.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "integer", "description": "The fact ID to delete" }
+                    },
+                    "required": ["id"]
+                }),
+            ),
             // --- Knowledge ---
             tool_def("knowledge_save",
                 "Save a document, article, note, or bookmark to the knowledge base. Entities (people, projects, technologies) are auto-extracted.",
@@ -204,6 +214,14 @@ impl ToolRegistry {
             "memory_list" => {
                 let category = args["category"].as_str();
                 tools::memory_list(db, user_id, category).await
+            }
+            "memory_delete" => {
+                let id = args["id"].as_i64().unwrap_or(0);
+                match db.delete_fact(user_id, id) {
+                    Ok(true) => format!("Deleted memory #{id}."),
+                    Ok(false) => format!("Memory #{id} not found."),
+                    Err(e) => format!("Error: {e}"),
+                }
             }
             "knowledge_save" => {
                 let title = args["title"].as_str().unwrap_or("");
