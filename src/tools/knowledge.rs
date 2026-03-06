@@ -150,10 +150,70 @@ pub async fn knowledge_save(
         }
     }
 
-    Ok((
-        doc_id,
-        format!("Saved document (ID: {doc_id}): \"{title}\" — {chunk_count} chunks"),
-    ))
+    // Auto-link: search existing memory facts related to this doc
+    let mut linked_facts = Vec::new();
+    if let Ok(facts) = db.search_facts(user_id, title) {
+        for (fact_id, fact_text, _cat) in facts.iter().take(5) {
+            if db.link_fact_to_doc(*fact_id, doc_id).is_ok() {
+                linked_facts.push(format!("#{fact_id} {fact_text}"));
+            }
+        }
+    }
+
+    let mut msg = format!("Saved document (ID: {doc_id}): \"{title}\" — {chunk_count} chunks");
+    if !linked_facts.is_empty() {
+        msg.push_str(&format!(
+            "\n📎 Auto-linked {} memory fact(s): {}",
+            linked_facts.len(),
+            linked_facts.join(", ")
+        ));
+    }
+
+    Ok((doc_id, msg))
+}
+
+// --- Knowledge Patch ---
+
+pub async fn knowledge_patch(
+    db: &Database,
+    user_id: u64,
+    doc_id: i64,
+    old_text: &str,
+    new_text: &str,
+    embedding_client: Option<&EmbeddingClient>,
+) -> String {
+    // 1. Patch document + chunks in DB
+    let affected_chunk_ids = match db.patch_document(user_id, doc_id, old_text, new_text) {
+        Ok(ids) => ids,
+        Err(e) => return format!("Error: {e}"),
+    };
+
+    // 2. Re-embed affected chunks
+    if !affected_chunk_ids.is_empty() {
+        if let Some(client) = embedding_client {
+            // Read updated chunk contents
+            let mut texts = Vec::new();
+            for chunk_id in &affected_chunk_ids {
+                if let Ok(content) = db.get_chunk_content(*chunk_id) {
+                    texts.push((*chunk_id, content));
+                }
+            }
+            let text_refs: Vec<&str> = texts.iter().map(|(_, t)| t.as_str()).collect();
+            if let Ok(embeddings) = client.embed_batch(&text_refs, "document").await {
+                let ids: Vec<i64> = texts.iter().map(|(id, _)| *id).collect();
+                let blobs: Vec<Vec<u8>> =
+                    embeddings.iter().map(|e| embedding_to_bytes(e)).collect();
+                if let Err(e) = db.update_chunk_embeddings(&ids, &blobs) {
+                    tracing::warn!("Failed to re-embed patched chunks: {e}");
+                }
+            }
+        }
+    }
+
+    format!(
+        "Patched document #{doc_id}: \"{old_text}\" → \"{new_text}\" ({} chunk(s) updated)",
+        affected_chunk_ids.len()
+    )
 }
 
 // --- Hybrid Search ---

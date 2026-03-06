@@ -973,6 +973,7 @@ async fn handle_command(
                 "/start — Bot info\n\
                  /help — Show commands\n\
                  /memory — List saved memories\n\
+                 /category — List memory categories\n\
                  /model — Switch AI model\n\n\
                  Supported input:\n\
                  - Text messages\n\
@@ -998,6 +999,16 @@ async fn handle_command(
                 for chunk in formatter::split_message(&output, 4096) {
                     bot.send_message(msg.chat.id, &chunk).await?;
                 }
+            }
+        }
+        "/category" => {
+            let _ = state.db.ensure_default_categories(user_id);
+            let cats = state.db.list_categories(user_id).unwrap_or_default();
+            if cats.is_empty() {
+                bot.send_message(msg.chat.id, "No categories.").await?;
+            } else {
+                let output = format!("Categories ({}):\n{}", cats.len(), cats.iter().map(|c| format!("• {c}")).collect::<Vec<_>>().join("\n"));
+                bot.send_message(msg.chat.id, &output).await?;
             }
         }
         "/model" => {

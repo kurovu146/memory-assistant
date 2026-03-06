@@ -29,8 +29,7 @@ impl ToolRegistry {
                         "fact": { "type": "string", "description": "The fact to remember" },
                         "category": {
                             "type": "string",
-                            "enum": ["preference", "decision", "personal", "technical", "project", "workflow", "general"],
-                            "description": "Category of the fact"
+                            "description": "Category of the fact (use category_list to see available categories)"
                         }
                     },
                     "required": ["fact"]
@@ -65,6 +64,31 @@ impl ToolRegistry {
                     "required": ["id"]
                 }),
             ),
+            // --- Categories ---
+            tool_def("category_list",
+                "List all available memory categories for this user.",
+                json!({ "type": "object", "properties": {} }),
+            ),
+            tool_def("category_add",
+                "Create a new custom memory category.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "Category name to create" }
+                    },
+                    "required": ["name"]
+                }),
+            ),
+            tool_def("category_delete",
+                "Delete an empty memory category. Fails if facts still use it.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "Category name to delete" }
+                    },
+                    "required": ["name"]
+                }),
+            ),
             // --- Knowledge ---
             tool_def("knowledge_save",
                 "Save a document, article, note, or bookmark to the knowledge base. Entities (people, projects, technologies) are auto-extracted.",
@@ -92,6 +116,38 @@ impl ToolRegistry {
             tool_def("knowledge_list",
                 "List all saved documents in the knowledge base. Shows titles, sources, chunk counts, and save dates.",
                 json!({ "type": "object", "properties": {} }),
+            ),
+            tool_def("knowledge_get",
+                "Get full content of a knowledge document by its ID. Use knowledge_list or knowledge_search to find the ID first.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "doc_id": { "type": "integer", "description": "Document ID" }
+                    },
+                    "required": ["doc_id"]
+                }),
+            ),
+            tool_def("knowledge_patch",
+                "Patch a knowledge document by replacing specific text. Only affected chunks are re-indexed. Use this instead of delete+save when updating existing docs.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "doc_id": { "type": "integer", "description": "Document ID to patch" },
+                        "old_text": { "type": "string", "description": "Text to find in the document" },
+                        "new_text": { "type": "string", "description": "Replacement text" }
+                    },
+                    "required": ["doc_id", "old_text", "new_text"]
+                }),
+            ),
+            tool_def("knowledge_delete",
+                "Delete a knowledge document and all its chunks by ID. Use knowledge_list to find the ID first.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "doc_id": { "type": "integer", "description": "Document ID to delete" }
+                    },
+                    "required": ["doc_id"]
+                }),
             ),
             tool_def("entity_search",
                 "Search for entities (people, projects, technologies, concepts) in the knowledge graph. Shows which documents and facts mention them.",
@@ -223,6 +279,38 @@ impl ToolRegistry {
                     Err(e) => format!("Error: {e}"),
                 }
             }
+            "category_list" => {
+                let _ = db.ensure_default_categories(user_id);
+                match db.list_categories(user_id) {
+                    Ok(cats) if cats.is_empty() => "No categories found.".into(),
+                    Ok(cats) => cats.join(", "),
+                    Err(e) => format!("Error: {e}"),
+                }
+            }
+            "category_add" => {
+                let name = args["name"].as_str().unwrap_or("");
+                if name.is_empty() {
+                    "Error: name cannot be empty".into()
+                } else {
+                    let _ = db.ensure_default_categories(user_id);
+                    match db.add_category(user_id, name) {
+                        Ok(()) => format!("Category '{name}' created."),
+                        Err(e) => format!("Error: {e}"),
+                    }
+                }
+            }
+            "category_delete" => {
+                let name = args["name"].as_str().unwrap_or("");
+                if name.is_empty() {
+                    "Error: name cannot be empty".into()
+                } else {
+                    match db.delete_category(user_id, name) {
+                        Ok(true) => format!("Category '{name}' deleted."),
+                        Ok(false) => format!("Category '{name}' not found."),
+                        Err(e) => format!("Error: {e}"),
+                    }
+                }
+            }
             "knowledge_save" => {
                 let title = args["title"].as_str().unwrap_or("");
                 let content = args["content"].as_str().unwrap_or("");
@@ -251,6 +339,45 @@ impl ToolRegistry {
             }
             "knowledge_list" => {
                 tools::knowledge_list(db, user_id).await
+            }
+            "knowledge_get" => {
+                let doc_id = args["doc_id"].as_i64().unwrap_or(0);
+                match db.get_document(user_id, doc_id) {
+                    Ok((title, content, source, tags)) => {
+                        let src = source.as_deref().unwrap_or("none");
+                        let tgs = tags.as_deref().unwrap_or("none");
+                        let mut out = format!("# {title}\nSource: {src}\nTags: {tgs}\n\n{content}");
+                        // Append linked memory facts
+                        if let Ok(linked) = db.get_doc_linked_facts(doc_id) {
+                            if !linked.is_empty() {
+                                out.push_str("\n\nLinked memories:");
+                                for (fid, fact, _cat) in &linked {
+                                    out.push_str(&format!("\n- [{fid}] {fact}"));
+                                }
+                            }
+                        }
+                        out
+                    }
+                    Err(_) => format!("Document #{doc_id} not found."),
+                }
+            }
+            "knowledge_patch" => {
+                let doc_id = args["doc_id"].as_i64().unwrap_or(0);
+                let old_text = args["old_text"].as_str().unwrap_or("");
+                let new_text = args["new_text"].as_str().unwrap_or("");
+                if old_text.is_empty() {
+                    "Error: old_text cannot be empty".into()
+                } else {
+                    tools::knowledge_patch(db, user_id, doc_id, old_text, new_text, embedding_client).await
+                }
+            }
+            "knowledge_delete" => {
+                let doc_id = args["doc_id"].as_i64().unwrap_or(0);
+                match db.delete_document(user_id, doc_id) {
+                    Ok(true) => format!("Deleted document #{doc_id} and all its chunks."),
+                    Ok(false) => format!("Document #{doc_id} not found."),
+                    Err(e) => format!("Error: {e}"),
+                }
             }
             "entity_search" => {
                 let query = args["query"].as_str().unwrap_or("");

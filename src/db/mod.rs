@@ -115,7 +115,34 @@ impl Database {
             CREATE TRIGGER IF NOT EXISTS knowledge_chunks_ad AFTER DELETE ON knowledge_chunks BEGIN
                 INSERT INTO knowledge_chunks_fts(knowledge_chunks_fts, rowid, content) VALUES('delete', old.id, old.content);
             END;
+
+            CREATE TRIGGER IF NOT EXISTS knowledge_chunks_au AFTER UPDATE OF content ON knowledge_chunks BEGIN
+                INSERT INTO knowledge_chunks_fts(knowledge_chunks_fts, rowid, content) VALUES('delete', old.id, old.content);
+                INSERT INTO knowledge_chunks_fts(rowid, content) VALUES (new.id, new.content);
+            END;
             "
+        )?;
+
+        // Categories (dynamic, per-user)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(user_id, name)
+            );"
+        )?;
+
+        // Memory ↔ KB links
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS memory_kb_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fact_id INTEGER NOT NULL REFERENCES memory_facts(id) ON DELETE CASCADE,
+                doc_id INTEGER NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(fact_id, doc_id)
+            );"
         )?;
 
         // User preferences
@@ -242,6 +269,118 @@ impl Database {
             )
             .map_err(|e| e.to_string())?;
         Ok(rows > 0)
+    }
+
+    // --- Categories ---
+
+    const DEFAULT_CATEGORIES: &'static [&'static str] = &[
+        "preference", "decision", "personal", "technical", "project", "workflow", "general",
+    ];
+
+    pub fn ensure_default_categories(&self, user_id: u64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        for cat in Self::DEFAULT_CATEGORIES {
+            conn.execute(
+                "INSERT OR IGNORE INTO categories (user_id, name) VALUES (?1, ?2)",
+                params![user_id as i64, cat],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub fn list_categories(&self, user_id: u64) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.prepare("SELECT name FROM categories WHERE user_id = ?1 ORDER BY name")
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map(params![user_id as i64], |row| row.get(0))?;
+                rows.collect()
+            })
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn add_category(&self, user_id: u64, name: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO categories (user_id, name) VALUES (?1, ?2)",
+            params![user_id as i64, name],
+        )
+        .map_err(|e| {
+            if e.to_string().contains("UNIQUE") {
+                format!("Category '{name}' already exists.")
+            } else {
+                e.to_string()
+            }
+        })?;
+        Ok(())
+    }
+
+    pub fn delete_category(&self, user_id: u64, name: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().unwrap();
+        // Check if any facts use this category
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_facts WHERE user_id = ?1 AND category = ?2",
+                params![user_id as i64, name],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if count > 0 {
+            return Err(format!(
+                "Cannot delete category '{name}': {count} fact(s) still use it."
+            ));
+        }
+        let rows = conn
+            .execute(
+                "DELETE FROM categories WHERE user_id = ?1 AND name = ?2",
+                params![user_id as i64, name],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(rows > 0)
+    }
+
+    // --- Memory ↔ KB Links ---
+
+    pub fn link_fact_to_doc(&self, fact_id: i64, doc_id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_kb_links (fact_id, doc_id) VALUES (?1, ?2)",
+            params![fact_id, doc_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn get_fact_links(&self, fact_id: i64) -> Result<Vec<(i64, String)>, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.prepare(
+            "SELECT kd.id, kd.title FROM memory_kb_links mkl
+             JOIN knowledge_documents kd ON mkl.doc_id = kd.id
+             WHERE mkl.fact_id = ?1"
+        )
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map(params![fact_id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?;
+            rows.collect()
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn get_doc_linked_facts(&self, doc_id: i64) -> Result<Vec<(i64, String, String)>, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.prepare(
+            "SELECT mf.id, mf.fact, mf.category FROM memory_kb_links mkl
+             JOIN memory_facts mf ON mkl.fact_id = mf.id
+             WHERE mkl.doc_id = ?1"
+        )
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map(params![doc_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+            rows.collect()
+        })
+        .map_err(|e| e.to_string())
     }
 
     // --- Memory context for system prompt ---
@@ -565,6 +704,90 @@ impl Database {
         .map_err(|e| e.to_string())
     }
 
+    pub fn get_chunk_content(&self, chunk_id: i64) -> Result<String, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT content FROM knowledge_chunks WHERE id = ?1",
+            params![chunk_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// Patch document + affected chunks: find/replace text.
+    /// Returns (updated_doc_content, affected_chunk_ids).
+    pub fn patch_document(
+        &self,
+        user_id: u64,
+        doc_id: i64,
+        old_text: &str,
+        new_text: &str,
+    ) -> Result<Vec<i64>, String> {
+        let conn = self.conn.lock().unwrap();
+
+        // 1. Update document content
+        let doc_content: String = conn
+            .query_row(
+                "SELECT content FROM knowledge_documents WHERE id = ?1 AND user_id = ?2",
+                params![doc_id, user_id as i64],
+                |row| row.get(0),
+            )
+            .map_err(|_| format!("Document #{doc_id} not found."))?;
+
+        if !doc_content.contains(old_text) {
+            return Err(format!("Text \"{old_text}\" not found in document #{doc_id}."));
+        }
+
+        let new_content = doc_content.replace(old_text, new_text);
+        conn.execute(
+            "UPDATE knowledge_documents SET content = ?1 WHERE id = ?2",
+            params![&new_content, doc_id],
+        )
+        .map_err(|e| e.to_string())?;
+
+        // Also update FTS for the document
+        let _ = conn.execute(
+            "INSERT INTO knowledge_docs_fts(knowledge_docs_fts, rowid, title, content) VALUES('delete', ?1, '', ?2)",
+            params![doc_id, &doc_content],
+        );
+        let title: String = conn
+            .query_row("SELECT title FROM knowledge_documents WHERE id = ?1", params![doc_id], |row| row.get(0))
+            .unwrap_or_default();
+        let _ = conn.execute(
+            "INSERT INTO knowledge_docs_fts(rowid, title, content) VALUES (?1, ?2, ?3)",
+            params![doc_id, &title, &new_content],
+        );
+
+        // 2. Find and update affected chunks (trigger handles FTS re-index)
+        let chunk_ids: Vec<i64> = conn
+            .prepare(
+                "SELECT id FROM knowledge_chunks WHERE doc_id = ?1 AND content LIKE '%' || ?2 || '%'",
+            )
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map(params![doc_id, old_text], |row| row.get(0))?;
+                rows.collect()
+            })
+            .map_err(|e| e.to_string())?;
+
+        for chunk_id in &chunk_ids {
+            let old_chunk: String = conn
+                .query_row(
+                    "SELECT content FROM knowledge_chunks WHERE id = ?1",
+                    params![chunk_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let new_chunk = old_chunk.replace(old_text, new_text);
+            conn.execute(
+                "UPDATE knowledge_chunks SET content = ?1, embedding = NULL WHERE id = ?2",
+                params![&new_chunk, chunk_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        Ok(chunk_ids)
+    }
+
     // --- User Preferences ---
 
     pub fn get_user_model(&self, user_id: u64) -> String {
@@ -584,6 +807,29 @@ impl Database {
              ON CONFLICT(user_id) DO UPDATE SET model = ?2, updated_at = datetime('now')",
             params![user_id as i64, model_id],
         );
+    }
+
+    /// Get full content of a knowledge document by ID.
+    pub fn get_document(&self, user_id: u64, doc_id: i64) -> Result<(String, String, Option<String>, Option<String>), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT title, content, source, tags FROM knowledge_documents WHERE id = ?1 AND user_id = ?2",
+            params![doc_id, user_id as i64],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// Delete a knowledge document (chunks cascade-deleted automatically).
+    pub fn delete_document(&self, user_id: u64, doc_id: i64) -> Result<bool, String> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "DELETE FROM knowledge_documents WHERE id = ?1 AND user_id = ?2",
+                params![doc_id, user_id as i64],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(rows > 0)
     }
 
     pub fn search_entities(
