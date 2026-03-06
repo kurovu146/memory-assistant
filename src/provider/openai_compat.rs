@@ -117,14 +117,23 @@ fn build_openai_messages(messages: &[Message]) -> Vec<serde_json::Value> {
                 let openai_tool_calls: Vec<serde_json::Value> = tool_calls
                     .iter()
                     .map(|tc| {
-                        json!({
+                        let mut call = json!({
                             "id": tc.id,
                             "type": "function",
                             "function": {
                                 "name": tc.function.name,
                                 "arguments": tc.function.arguments,
                             }
-                        })
+                        });
+                        // Gemini 3: pass back thought_signature
+                        if let Some(sig) = &tc.thought_signature {
+                            call["extra_content"] = json!({
+                                "google": {
+                                    "thought_signature": sig
+                                }
+                            });
+                        }
+                        call
                     })
                     .collect();
 
@@ -182,18 +191,33 @@ async fn parse_openai_response(resp: reqwest::Response) -> Result<LlmResponse, P
                 .unwrap_or("{}")
                 .to_string();
 
+            // Gemini 3: capture thought_signature from extra_content
+            let thought_signature = tc["extra_content"]["google"]["thought_signature"]
+                .as_str()
+                .map(|s| s.to_string());
+
             tool_calls.push(ToolCall {
                 id,
                 function: ToolCallFunction { name, arguments },
+                thought_signature,
             });
         }
     }
 
+    let usage_obj = &body["usage"];
+    // Gemini OpenAI compat: cache tokens in prompt_tokens_details.cached_tokens
+    // and/or cache_read_input_tokens / cache_creation_input_tokens
+    let cache_read = usage_obj["cache_read_input_tokens"].as_u64()
+        .or_else(|| usage_obj["prompt_tokens_details"]["cached_tokens"].as_u64())
+        .unwrap_or(0) as u32;
+    let cache_creation = usage_obj["cache_creation_input_tokens"].as_u64()
+        .unwrap_or(0) as u32;
+
     let usage = Usage {
-        prompt_tokens: body["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-        completion_tokens: body["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32,
-        cache_creation_tokens: 0,
-        cache_read_tokens: 0,
+        prompt_tokens: usage_obj["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+        completion_tokens: usage_obj["completion_tokens"].as_u64().unwrap_or(0) as u32,
+        cache_creation_tokens: cache_creation,
+        cache_read_tokens: cache_read,
     };
 
     Ok(LlmResponse {

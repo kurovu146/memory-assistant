@@ -282,6 +282,7 @@ async fn parse_claude_response(resp: reqwest::Response) -> Result<LlmResponse, P
                             name,
                             arguments: serde_json::to_string(input).unwrap_or_default(),
                         },
+                        thought_signature: None,
                     });
                 }
                 _ => {}

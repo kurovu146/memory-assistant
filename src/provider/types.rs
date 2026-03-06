@@ -79,6 +79,9 @@ pub struct FunctionDef {
 pub struct ToolCall {
     pub id: String,
     pub function: ToolCallFunction,
+    /// Gemini 3 thought signature (must be passed back for function calling)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
