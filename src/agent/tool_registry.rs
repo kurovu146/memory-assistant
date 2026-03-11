@@ -254,11 +254,13 @@ impl ToolRegistry {
     ];
 
     /// Execute a tool by name with given arguments.
+    /// `kb_owner_id` is the knowledge base owner (user_id in private, chat_id in groups).
     /// `allowed_users` is used to restrict write tools in group chats.
     pub async fn execute(
         tool_name: &str,
         args_json: &str,
         user_id: u64,
+        kb_owner_id: u64,
         db: &crate::db::Database,
         pool: &ProviderPool,
         embedding_client: Option<&crate::tools::EmbeddingClient>,
@@ -336,12 +338,12 @@ impl ToolRegistry {
                 let source = args["source"].as_str();
                 let tags = args["tags"].as_str();
 
-                match tools::knowledge_save(db, user_id, title, content, source, tags, embedding_client).await {
+                match tools::knowledge_save(db, kb_owner_id, title, content, source, tags, embedding_client).await {
                     Ok((doc_id, msg)) => {
                         // Auto-extract entities in background
                         let text = format!("{title}\n\n{content}");
                         let entity_count = tools::extract_and_link_entities(
-                            pool, db, user_id, "document", doc_id, &text,
+                            pool, db, kb_owner_id, "document", doc_id, &text,
                         ).await;
                         if entity_count > 0 {
                             format!("{msg}\nExtracted {entity_count} entities.")
@@ -354,14 +356,14 @@ impl ToolRegistry {
             }
             "knowledge_search" => {
                 let query = args["query"].as_str().unwrap_or("");
-                tools::knowledge_search(db, user_id, query, embedding_client).await
+                tools::knowledge_search(db, kb_owner_id, query, embedding_client).await
             }
             "knowledge_list" => {
-                tools::knowledge_list(db, user_id).await
+                tools::knowledge_list(db, kb_owner_id).await
             }
             "knowledge_get" => {
                 let doc_id = args["doc_id"].as_i64().unwrap_or(0);
-                match db.get_document(user_id, doc_id) {
+                match db.get_document(kb_owner_id, doc_id) {
                     Ok((title, content, source, tags)) => {
                         let src = source.as_deref().unwrap_or("none");
                         let tgs = tags.as_deref().unwrap_or("none");
@@ -387,12 +389,12 @@ impl ToolRegistry {
                 if old_text.is_empty() {
                     "Error: old_text cannot be empty".into()
                 } else {
-                    tools::knowledge_patch(db, user_id, doc_id, old_text, new_text, embedding_client).await
+                    tools::knowledge_patch(db, kb_owner_id, doc_id, old_text, new_text, embedding_client).await
                 }
             }
             "knowledge_delete" => {
                 let doc_id = args["doc_id"].as_i64().unwrap_or(0);
-                match db.delete_document(user_id, doc_id) {
+                match db.delete_document(kb_owner_id, doc_id) {
                     Ok(true) => format!("Deleted document #{doc_id} and all its chunks."),
                     Ok(false) => format!("Document #{doc_id} not found."),
                     Err(e) => format!("Error: {e}"),
@@ -400,7 +402,7 @@ impl ToolRegistry {
             }
             "entity_search" => {
                 let query = args["query"].as_str().unwrap_or("");
-                tools::entity_search(db, user_id, query).await
+                tools::entity_search(db, kb_owner_id, query).await
             }
             "get_datetime" => tools::get_datetime().await,
             "bash" => {

@@ -613,6 +613,12 @@ async fn run_agent_and_respond_inner(
     user_content: MessageContent,
     has_direct_content: bool,
 ) -> ResponseResult<()> {
+    // Knowledge base owner: in groups use chat_id (shared KB), in private use user_id (personal KB)
+    let kb_owner_id = if chat_id.0 < 0 {
+        chat_id.0.unsigned_abs()
+    } else {
+        user_id
+    };
     // Send initial progress message
     let _ = bot.send_chat_action(chat_id, ChatAction::Typing).await;
     let progress_msg = bot.send_message(chat_id, "Thinking...").await?;
@@ -666,12 +672,12 @@ async fn run_agent_and_respond_inner(
     let user_prompt = state.base_prompt.replace("{USER_ID}", &user_id.to_string());
     let mut system_prompt = skills::build_system_prompt(&user_prompt, &memory_ctx);
 
-    // Auto-RAG: pre-search knowledge + memory before LLM call
+    // Auto-RAG: pre-search knowledge (scoped to KB owner) + memory (personal) before LLM call
     if !has_direct_content && !history_text.is_empty() {
         let (knowledge_results, memory_results) = tokio::join!(
             crate::tools::knowledge_search(
                 &state.db,
-                user_id,
+                kb_owner_id,
                 history_text,
                 state.embedding_client.as_ref(),
             ),
@@ -721,6 +727,7 @@ async fn run_agent_and_respond_inner(
         &system_prompt,
         user_content,
         user_id,
+        kb_owner_id,
         &state.db,
         state.config.max_agent_turns,
         history,

@@ -28,11 +28,13 @@ pub struct AgentLoop;
 
 impl AgentLoop {
     /// Run the agent loop: send messages to LLM, execute tool calls, repeat.
+    /// `kb_owner_id` is the knowledge base owner (user_id in private, chat_id in groups).
     pub async fn run<F>(
         pool: &ProviderPool,
         system_prompt: &str,
         user_content: MessageContent,
         user_id: u64,
+        kb_owner_id: u64,
         db: &Database,
         max_turns: usize,
         history: Vec<Message>,
@@ -111,6 +113,7 @@ impl AgentLoop {
                     tool_name,
                     &tc.function.arguments,
                     user_id,
+                    kb_owner_id,
                     db,
                     pool,
                     embedding_client,
