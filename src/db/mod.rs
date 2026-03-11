@@ -145,6 +145,19 @@ impl Database {
             );"
         )?;
 
+        // Pending approval queue (for non-whitelisted users' write requests in groups)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pending_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_id INTEGER NOT NULL,
+                requested_by INTEGER NOT NULL,
+                tool_name TEXT NOT NULL,
+                args_json TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );"
+        )?;
+
         // User preferences
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS user_preferences (
@@ -831,6 +844,64 @@ impl Database {
             .map_err(|e| e.to_string())?;
         Ok(rows > 0)
     }
+
+    // --- Pending Approval Queue ---
+
+    pub fn save_pending(
+        &self,
+        scope_id: u64,
+        requested_by: u64,
+        tool_name: &str,
+        args_json: &str,
+        summary: &str,
+    ) -> Result<i64, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pending_items (scope_id, requested_by, tool_name, args_json, summary) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![scope_id as i64, requested_by as i64, tool_name, args_json, summary],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn list_pending(&self, scope_id: u64) -> Result<Vec<(i64, u64, String, String, String)>, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.prepare(
+            "SELECT id, requested_by, tool_name, summary, created_at FROM pending_items WHERE scope_id = ?1 ORDER BY created_at ASC"
+        )
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map(params![scope_id as i64], |row| {
+                let rb: i64 = row.get(1)?;
+                Ok((row.get(0)?, rb as u64, row.get(2)?, row.get(3)?, row.get(4)?))
+            })?;
+            rows.collect()
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn get_pending(&self, id: i64) -> Result<(u64, u64, String, String, String), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT scope_id, requested_by, tool_name, args_json, summary FROM pending_items WHERE id = ?1",
+            params![id],
+            |row| {
+                let s: i64 = row.get(0)?;
+                let r: i64 = row.get(1)?;
+                Ok((s as u64, r as u64, row.get(2)?, row.get(3)?, row.get(4)?))
+            },
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn delete_pending(&self, id: i64) -> Result<bool, String> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute("DELETE FROM pending_items WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(rows > 0)
+    }
+
+    // --- Entities ---
 
     pub fn search_entities(
         &self,

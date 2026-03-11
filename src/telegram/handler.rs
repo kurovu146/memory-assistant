@@ -147,6 +147,9 @@ CÁCH DÙNG:
         BotCommand::new("help", "Show available commands"),
         BotCommand::new("memory", "View saved memories"),
         BotCommand::new("model", "Switch AI model"),
+        BotCommand::new("pending", "View pending approval requests"),
+        BotCommand::new("approve", "Approve a pending request"),
+        BotCommand::new("reject", "Reject a pending request"),
     ];
     if let Err(e) = bot.set_my_commands(commands).await {
         error!("Failed to set bot commands: {e}");
@@ -1038,7 +1041,10 @@ async fn handle_command(
                  /help — Show commands\n\
                  /memory — List saved memories\n\
                  /category — List memory categories\n\
-                 /model — Switch AI model\n\n\
+                 /model — Switch AI model\n\
+                 /pending — View pending requests\n\
+                 /approve <id> — Approve a request\n\
+                 /reject <id> — Reject a request\n\n\
                  Supported input:\n\
                  - Text messages\n\
                  - Photos (with optional caption)\n\
@@ -1076,11 +1082,140 @@ async fn handle_command(
             }
         }
         "/model" => {
-            handle_model_command(msg, bot, state, text, user_id).await?;
+            if !state.config.allowed_users.is_empty()
+                && !state.config.allowed_users.contains(&user_id)
+            {
+                bot.send_message(msg.chat.id, "Only whitelisted users can change the model.").await?;
+            } else {
+                handle_model_command(msg, bot, state, text, user_id).await?;
+            }
+        }
+        cmd if cmd.starts_with("/pending") => {
+            handle_pending_command(msg, bot, state, user_id, kb_owner_id).await?;
+        }
+        cmd if cmd.starts_with("/approve") => {
+            let id_str = text.strip_prefix("/approve").unwrap_or("").trim();
+            handle_approve_command(msg, bot, state, user_id, id_str).await?;
+        }
+        cmd if cmd.starts_with("/reject") => {
+            let id_str = text.strip_prefix("/reject").unwrap_or("").trim();
+            handle_reject_command(msg, bot, state, user_id, id_str).await?;
         }
         _ => {
             bot.send_message(msg.chat.id, "Unknown command. /help")
                 .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn handle_pending_command(
+    msg: &teloxide::types::Message,
+    bot: &Bot,
+    state: &AppState,
+    user_id: u64,
+    kb_owner_id: u64,
+) -> ResponseResult<()> {
+    let items = state.db.list_pending(kb_owner_id).unwrap_or_default();
+    if items.is_empty() {
+        bot.send_message(msg.chat.id, "No pending requests.").await?;
+        return Ok(());
+    }
+    let is_whitelisted = state.config.allowed_users.is_empty()
+        || state.config.allowed_users.contains(&user_id);
+    let mut lines: Vec<String> = vec!["Pending requests:".into()];
+    for (id, requested_by, _tool, summary, created_at) in &items {
+        lines.push(format!("#{id} | user {requested_by} | {summary}\n  {created_at}"));
+    }
+    if is_whitelisted {
+        lines.push("\nUse /approve <id> or /reject <id>".into());
+    }
+    bot.send_message(msg.chat.id, lines.join("\n")).await?;
+    Ok(())
+}
+
+async fn handle_approve_command(
+    msg: &teloxide::types::Message,
+    bot: &Bot,
+    state: &AppState,
+    user_id: u64,
+    id_str: &str,
+) -> ResponseResult<()> {
+    if !state.config.allowed_users.is_empty()
+        && !state.config.allowed_users.contains(&user_id)
+    {
+        bot.send_message(msg.chat.id, "Only whitelisted users can approve requests.").await?;
+        return Ok(());
+    }
+    let id: i64 = match id_str.parse() {
+        Ok(v) => v,
+        Err(_) => {
+            bot.send_message(msg.chat.id, "Usage: /approve <id>").await?;
+            return Ok(());
+        }
+    };
+    let (scope_id, _requested_by, tool_name, args_json, summary) = match state.db.get_pending(id) {
+        Ok(v) => v,
+        Err(_) => {
+            bot.send_message(msg.chat.id, &format!("Pending #{id} not found.")).await?;
+            return Ok(());
+        }
+    };
+
+    // Execute the original tool with kb_owner_id = scope_id
+    use crate::agent::{ToolRegistry, ToolOutput};
+    let output = ToolRegistry::execute(
+        &tool_name,
+        &args_json,
+        user_id,       // approver as actor
+        scope_id,      // original scope
+        &state.db,
+        &state.pool,
+        state.embedding_client.as_ref(),
+        &state.config.allowed_users, // approver is whitelisted, will pass check
+    )
+    .await;
+
+    let result_text = match output {
+        ToolOutput::Text(t) => t,
+        ToolOutput::Image { text, .. } => text,
+    };
+
+    let _ = state.db.delete_pending(id);
+    bot.send_message(
+        msg.chat.id,
+        format!("Approved #{id}: {summary}\n{result_text}"),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn handle_reject_command(
+    msg: &teloxide::types::Message,
+    bot: &Bot,
+    state: &AppState,
+    user_id: u64,
+    id_str: &str,
+) -> ResponseResult<()> {
+    if !state.config.allowed_users.is_empty()
+        && !state.config.allowed_users.contains(&user_id)
+    {
+        bot.send_message(msg.chat.id, "Only whitelisted users can reject requests.").await?;
+        return Ok(());
+    }
+    let id: i64 = match id_str.parse() {
+        Ok(v) => v,
+        Err(_) => {
+            bot.send_message(msg.chat.id, "Usage: /reject <id>").await?;
+            return Ok(());
+        }
+    };
+    match state.db.delete_pending(id) {
+        Ok(true) => {
+            bot.send_message(msg.chat.id, &format!("Rejected and removed #{id}.")).await?;
+        }
+        _ => {
+            bot.send_message(msg.chat.id, &format!("Pending #{id} not found.")).await?;
         }
     }
     Ok(())

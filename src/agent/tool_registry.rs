@@ -266,14 +266,19 @@ impl ToolRegistry {
         embedding_client: Option<&crate::tools::EmbeddingClient>,
         allowed_users: &[u64],
     ) -> ToolOutput {
-        // Block write tools for non-whitelisted users
+        // Non-whitelisted users: save write requests to pending queue for approval
         if Self::WRITE_TOOLS.contains(&tool_name)
             && !allowed_users.is_empty()
             && !allowed_users.contains(&user_id)
         {
-            return ToolOutput::Text(
-                "Permission denied: only whitelisted users can modify memory/knowledge.".into(),
-            );
+            let args_parsed: serde_json::Value = serde_json::from_str(args_json).unwrap_or_default();
+            let summary = Self::build_pending_summary(tool_name, &args_parsed);
+            match db.save_pending(kb_owner_id, user_id, tool_name, args_json, &summary) {
+                Ok(id) => return ToolOutput::Text(
+                    format!("Request #{id} queued for approval: {summary}\nA whitelisted user can /approve {id} or /reject {id}.")
+                ),
+                Err(e) => return ToolOutput::Text(format!("Error saving request: {e}")),
+            }
         }
 
         let args: serde_json::Value = serde_json::from_str(args_json).unwrap_or_default();
@@ -446,6 +451,43 @@ impl ToolRegistry {
         };
 
         ToolOutput::Text(text_result)
+    }
+
+    /// Build a human-readable summary for a pending write request.
+    fn build_pending_summary(tool_name: &str, args: &serde_json::Value) -> String {
+        match tool_name {
+            "memory_save" => {
+                let fact = args["fact"].as_str().unwrap_or("");
+                let cat = args["category"].as_str().unwrap_or("general");
+                let preview: String = fact.chars().take(100).collect();
+                format!("[memory_save] [{cat}] {preview}")
+            }
+            "memory_delete" => {
+                let id = args["id"].as_i64().unwrap_or(0);
+                format!("[memory_delete] #{id}")
+            }
+            "knowledge_save" => {
+                let title = args["title"].as_str().unwrap_or("");
+                format!("[knowledge_save] \"{title}\"")
+            }
+            "knowledge_patch" => {
+                let doc_id = args["doc_id"].as_i64().unwrap_or(0);
+                format!("[knowledge_patch] doc #{doc_id}")
+            }
+            "knowledge_delete" => {
+                let doc_id = args["doc_id"].as_i64().unwrap_or(0);
+                format!("[knowledge_delete] doc #{doc_id}")
+            }
+            "category_add" => {
+                let name = args["name"].as_str().unwrap_or("");
+                format!("[category_add] \"{name}\"")
+            }
+            "category_delete" => {
+                let name = args["name"].as_str().unwrap_or("");
+                format!("[category_delete] \"{name}\"")
+            }
+            _ => format!("[{tool_name}]"),
+        }
     }
 
     /// Read an image file from disk, return as ToolOutput::Image for vision analysis.
