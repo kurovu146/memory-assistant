@@ -39,6 +39,7 @@ impl AgentLoop {
         embedding_client: Option<&crate::tools::EmbeddingClient>,
         model: &str,
         on_progress: F,
+        allowed_users: &[u64],
     ) -> Result<AgentResult, String>
     where
         F: Fn(AgentProgress),
@@ -113,6 +114,7 @@ impl AgentLoop {
                     db,
                     pool,
                     embedding_client,
+                    allowed_users,
                 )
                 .await;
 

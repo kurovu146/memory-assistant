@@ -36,6 +36,7 @@ struct AppState {
     config: Config,
     base_prompt: String,
     telegram_token: String,
+    bot_username: String,
     embedding_client: Option<EmbeddingClient>,
     media_groups: TokioMutex<HashMap<String, MediaGroupData>>,
 }
@@ -105,12 +106,23 @@ CÁCH DÙNG:
 - bash: chỉ cho shell commands (git, cargo, npm, pdftotext...).
 - get_datetime: lấy ngày giờ hiện tại.");
 
+    // Fetch bot username for group mention detection
+    let bot_username = match bot.get_me().await {
+        Ok(me) => me.username.clone().unwrap_or_default().to_lowercase(),
+        Err(e) => {
+            error!("Failed to get bot info: {e}");
+            String::new()
+        }
+    };
+    info!("Bot username: @{bot_username}");
+
     let state = Arc::new(AppState {
         pool,
         db,
         config: config.clone(),
         base_prompt,
         telegram_token: config.telegram_bot_token.clone(),
+        bot_username,
         embedding_client,
         media_groups: TokioMutex::new(HashMap::new()),
     });
@@ -242,12 +254,32 @@ async fn handle_message(
 ) -> ResponseResult<()> {
     let user_id = msg.from.as_ref().map(|u| u.id.0).unwrap_or(0);
 
-    // Auth check
-    if !state.config.allowed_users.is_empty()
+    // Auth check — in private chats, block non-whitelisted users entirely.
+    // In group chats, allow everyone to chat but write tools are restricted at tool level.
+    let is_group = msg.chat.is_group() || msg.chat.is_supergroup();
+    if !is_group
+        && !state.config.allowed_users.is_empty()
         && !state.config.allowed_users.contains(&user_id)
     {
         bot.send_message(msg.chat.id, "Unauthorized.").await?;
         return Ok(());
+    }
+
+    // In group chats, only respond when mentioned (@bot) or replied to.
+    if is_group {
+        let is_reply_to_bot = msg.reply_to_message().is_some_and(|reply| {
+            reply.from.as_ref().is_some_and(|u| {
+                u.username.as_ref().is_some_and(|name| name.to_lowercase() == state.bot_username)
+            })
+        });
+        let text_lower = msg.text().or(msg.caption()).unwrap_or("").to_lowercase();
+        let is_mentioned = !state.bot_username.is_empty()
+            && text_lower.contains(&format!("@{}", state.bot_username));
+        let is_command = msg.text().is_some_and(|t| t.starts_with('/'));
+
+        if !is_reply_to_bot && !is_mentioned && !is_command {
+            return Ok(());
+        }
     }
 
     // Check for media group (multiple files sent at once)
@@ -272,11 +304,20 @@ async fn handle_message(
         return handle_document(&msg, &bot, &state, doc, caption, user_id).await;
     }
 
-    // Get text content
+    // Get text content, strip @bot_username mention
     let text = match msg.text() {
-        Some(t) if !t.is_empty() => t.to_string(),
+        Some(t) if !t.is_empty() => {
+            if is_group && !state.bot_username.is_empty() {
+                t.replace(&format!("@{}", state.bot_username), "").trim().to_string()
+            } else {
+                t.to_string()
+            }
+        }
         _ => return Ok(()),
     };
+    if text.is_empty() {
+        return Ok(());
+    }
 
     // Handle commands
     if text.starts_with('/') {
@@ -686,6 +727,7 @@ async fn run_agent_and_respond_inner(
         state.embedding_client.as_ref(),
         &model,
         on_progress,
+        &state.config.allowed_users,
     )
     .await;
 

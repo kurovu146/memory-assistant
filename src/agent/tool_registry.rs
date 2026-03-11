@@ -246,7 +246,15 @@ impl ToolRegistry {
         ]
     }
 
-    /// Execute a tool by name with given arguments
+    /// Tools that modify memory/knowledge — restricted to whitelisted users in group chats.
+    const WRITE_TOOLS: &'static [&'static str] = &[
+        "memory_save", "memory_delete",
+        "category_add", "category_delete",
+        "knowledge_save", "knowledge_patch", "knowledge_delete",
+    ];
+
+    /// Execute a tool by name with given arguments.
+    /// `allowed_users` is used to restrict write tools in group chats.
     pub async fn execute(
         tool_name: &str,
         args_json: &str,
@@ -254,7 +262,18 @@ impl ToolRegistry {
         db: &crate::db::Database,
         pool: &ProviderPool,
         embedding_client: Option<&crate::tools::EmbeddingClient>,
+        allowed_users: &[u64],
     ) -> ToolOutput {
+        // Block write tools for non-whitelisted users
+        if Self::WRITE_TOOLS.contains(&tool_name)
+            && !allowed_users.is_empty()
+            && !allowed_users.contains(&user_id)
+        {
+            return ToolOutput::Text(
+                "Permission denied: only whitelisted users can modify memory/knowledge.".into(),
+            );
+        }
+
         let args: serde_json::Value = serde_json::from_str(args_json).unwrap_or_default();
 
         let text_result = match tool_name {
