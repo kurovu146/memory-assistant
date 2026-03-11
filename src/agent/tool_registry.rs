@@ -159,6 +159,31 @@ impl ToolRegistry {
                     "required": ["query"]
                 }),
             ),
+            // --- Pending Approval ---
+            tool_def("pending_list",
+                "List all pending write requests waiting for approval. Shows request ID, requester, tool, and summary.",
+                json!({ "type": "object", "properties": {} }),
+            ),
+            tool_def("pending_approve",
+                "Approve a pending write request by ID. Only whitelisted users can approve. This executes the original tool call.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "integer", "description": "Pending request ID to approve" }
+                    },
+                    "required": ["id"]
+                }),
+            ),
+            tool_def("pending_reject",
+                "Reject and remove a pending write request by ID. Only whitelisted users can reject.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "integer", "description": "Pending request ID to reject" }
+                    },
+                    "required": ["id"]
+                }),
+            ),
             // --- Datetime ---
             tool_def("get_datetime",
                 "Get current date and time in UTC and common timezones (Vietnam, US Eastern).",
@@ -410,6 +435,53 @@ impl ToolRegistry {
             "entity_search" => {
                 let query = args["query"].as_str().unwrap_or("");
                 tools::entity_search(db, kb_owner_id, query).await
+            }
+            "pending_list" => {
+                match db.list_pending(kb_owner_id) {
+                    Ok(items) if items.is_empty() => "No pending requests.".into(),
+                    Ok(items) => {
+                        let mut out = format!("{} pending request(s):\n", items.len());
+                        for (id, requested_by, _tool, summary, created_at) in &items {
+                            out.push_str(&format!("#{id} | user {requested_by} | {summary} | {created_at}\n"));
+                        }
+                        out
+                    }
+                    Err(e) => format!("Error: {e}"),
+                }
+            }
+            "pending_approve" => {
+                if !allowed_users.is_empty() && !allowed_users.contains(&user_id) {
+                    "Permission denied: only whitelisted users can approve requests.".into()
+                } else {
+                    let id = args["id"].as_i64().unwrap_or(0);
+                    match db.get_pending(id) {
+                        Ok((scope_id, _requested_by, tool_name, args_json, summary)) => {
+                            // Execute the original tool (recursive call with whitelisted user)
+                            let result = Box::pin(Self::execute(
+                                &tool_name, &args_json, user_id, scope_id, db, pool, embedding_client, allowed_users,
+                            )).await;
+                            let result_text = match result {
+                                ToolOutput::Text(t) => t,
+                                ToolOutput::Image { text, .. } => text,
+                            };
+                            let _ = db.delete_pending(id);
+                            format!("Approved #{id}: {summary}\n{result_text}")
+                        }
+                        Err(_) => format!("Pending #{id} not found."),
+                    }
+                }
+            }
+            "pending_reject" => {
+                if !allowed_users.is_empty() && !allowed_users.contains(&user_id) {
+                    "Permission denied: only whitelisted users can reject requests.".into()
+                } else {
+                    let id = args["id"].as_i64().unwrap_or(0);
+                    match db.delete_pending(id) {
+                        Ok(true) => format!("Rejected and removed #{id}."),
+                        Ok(false) => format!("Pending #{id} not found."),
+                        Err(e) => format!("Error: {e}"),
+                    }
+                }
             }
             "get_datetime" => tools::get_datetime().await,
             "bash" => {
