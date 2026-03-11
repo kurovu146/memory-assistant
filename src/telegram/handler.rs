@@ -331,7 +331,7 @@ async fn handle_message(
 
     // Handle commands
     if text.starts_with('/') {
-        return handle_command(&msg, &bot, &state, &text, user_id).await;
+        return handle_command(&msg, &bot, &state, &text, user_id, kb_owner_id).await;
     }
 
     // Run agent with text
@@ -679,8 +679,8 @@ async fn run_agent_and_respond_inner(
     // Load user's preferred model
     let model = state.db.get_user_model(user_id);
 
-    // Build system prompt with memory (personal) and file path scoped to KB owner
-    let memory_ctx = state.db.build_memory_context(user_id);
+    // Build system prompt with memory and file path scoped to KB owner
+    let memory_ctx = state.db.build_memory_context(kb_owner_id);
     let user_prompt = state.base_prompt.replace("{USER_ID}", &kb_owner_id.to_string());
     let mut system_prompt = skills::build_system_prompt(&user_prompt, &memory_ctx);
 
@@ -693,7 +693,7 @@ async fn run_agent_and_respond_inner(
                 history_text,
                 state.embedding_client.as_ref(),
             ),
-            crate::tools::memory_search(&state.db, user_id, history_text),
+            crate::tools::memory_search(&state.db, kb_owner_id, history_text),
         );
 
         let mut rag_ctx = String::new();
@@ -1014,6 +1014,7 @@ async fn handle_command(
     state: &AppState,
     text: &str,
     user_id: u64,
+    kb_owner_id: u64,
 ) -> ResponseResult<()> {
     match text.split_whitespace().next().unwrap_or("") {
         "/start" => {
@@ -1050,7 +1051,7 @@ async fn handle_command(
             .await?;
         }
         "/memory" => {
-            let facts = state.db.list_facts(user_id, None).unwrap_or_default();
+            let facts = state.db.list_facts(kb_owner_id, None).unwrap_or_default();
             if facts.is_empty() {
                 bot.send_message(msg.chat.id, "No memories saved yet.").await?;
             } else {
@@ -1065,8 +1066,8 @@ async fn handle_command(
             }
         }
         "/category" => {
-            let _ = state.db.ensure_default_categories(user_id);
-            let cats = state.db.list_categories(user_id).unwrap_or_default();
+            let _ = state.db.ensure_default_categories(kb_owner_id);
+            let cats = state.db.list_categories(kb_owner_id).unwrap_or_default();
             if cats.is_empty() {
                 bot.send_message(msg.chat.id, "No categories.").await?;
             } else {

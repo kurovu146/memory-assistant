@@ -282,27 +282,27 @@ impl ToolRegistry {
             "memory_save" => {
                 let fact = args["fact"].as_str().unwrap_or("");
                 let category = args["category"].as_str().unwrap_or("general");
-                tools::memory_save(db, user_id, fact, category).await
+                tools::memory_save(db, kb_owner_id, fact, category).await
             }
             "memory_search" => {
                 let keyword = args["keyword"].as_str().unwrap_or("");
-                tools::memory_search(db, user_id, keyword).await
+                tools::memory_search(db, kb_owner_id, keyword).await
             }
             "memory_list" => {
                 let category = args["category"].as_str();
-                tools::memory_list(db, user_id, category).await
+                tools::memory_list(db, kb_owner_id, category).await
             }
             "memory_delete" => {
                 let id = args["id"].as_i64().unwrap_or(0);
-                match db.delete_fact(user_id, id) {
+                match db.delete_fact(kb_owner_id, id) {
                     Ok(true) => format!("Deleted memory #{id}."),
                     Ok(false) => format!("Memory #{id} not found."),
                     Err(e) => format!("Error: {e}"),
                 }
             }
             "category_list" => {
-                let _ = db.ensure_default_categories(user_id);
-                match db.list_categories(user_id) {
+                let _ = db.ensure_default_categories(kb_owner_id);
+                match db.list_categories(kb_owner_id) {
                     Ok(cats) if cats.is_empty() => "No categories found.".into(),
                     Ok(cats) => cats.join(", "),
                     Err(e) => format!("Error: {e}"),
@@ -313,8 +313,8 @@ impl ToolRegistry {
                 if name.is_empty() {
                     "Error: name cannot be empty".into()
                 } else {
-                    let _ = db.ensure_default_categories(user_id);
-                    match db.add_category(user_id, name) {
+                    let _ = db.ensure_default_categories(kb_owner_id);
+                    match db.add_category(kb_owner_id, name) {
                         Ok(()) => format!("Category '{name}' created."),
                         Err(e) => format!("Error: {e}"),
                     }
@@ -325,7 +325,7 @@ impl ToolRegistry {
                 if name.is_empty() {
                     "Error: name cannot be empty".into()
                 } else {
-                    match db.delete_category(user_id, name) {
+                    match db.delete_category(kb_owner_id, name) {
                         Ok(true) => format!("Category '{name}' deleted."),
                         Ok(false) => format!("Category '{name}' not found."),
                         Err(e) => format!("Error: {e}"),
