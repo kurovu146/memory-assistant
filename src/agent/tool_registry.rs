@@ -275,7 +275,7 @@ impl ToolRegistry {
             let summary = Self::build_pending_summary(tool_name, &args_parsed);
             match db.save_pending(kb_owner_id, user_id, tool_name, args_json, &summary) {
                 Ok(id) => return ToolOutput::Text(
-                    format!("Request #{id} queued for approval: {summary}\nA whitelisted user can /approve {id} or /reject {id}.")
+                    format!("BLOCKED: Bạn không có quyền thực hiện thao tác này. Yêu cầu #{id} đã được gửi vào hàng chờ duyệt. Admin cần dùng /approve {id} để phê duyệt hoặc /reject {id} để từ chối. KHÔNG được nói rằng đã lưu thành công — hãy thông báo cho user biết yêu cầu đang CHỜ DUYỆT.")
                 ),
                 Err(e) => return ToolOutput::Text(format!("Error saving request: {e}")),
             }
