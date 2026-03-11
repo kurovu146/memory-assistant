@@ -27,6 +27,7 @@ struct MediaGroupData {
     caption: String,
     chat_id: ChatId,
     user_id: u64,
+    kb_owner_id: u64,
     counter: usize,
 }
 
@@ -136,8 +137,8 @@ CÁCH DÙNG:
     }
 
     info!(
-        "Memory Assistant bot started. Allowed users: {:?}",
-        config.allowed_users
+        "Memory Assistant bot started. Allowed users: {:?}, Allowed groups: {:?}",
+        config.allowed_users, config.allowed_groups
     );
 
     // Register bot commands
@@ -255,10 +256,16 @@ async fn handle_message(
     let user_id = msg.from.as_ref().map(|u| u.id.0).unwrap_or(0);
 
     // Auth check — in private chats, block non-whitelisted users entirely.
-    // In group chats, allow everyone to chat but write tools are restricted at tool level.
+    // In group chats, only respond in whitelisted groups.
     let is_group = msg.chat.is_group() || msg.chat.is_supergroup();
-    if !is_group
-        && !state.config.allowed_users.is_empty()
+    if is_group {
+        let group_id = msg.chat.id.0.unsigned_abs();
+        if !state.config.allowed_groups.is_empty()
+            && !state.config.allowed_groups.contains(&group_id)
+        {
+            return Ok(()); // silently ignore non-whitelisted groups
+        }
+    } else if !state.config.allowed_users.is_empty()
         && !state.config.allowed_users.contains(&user_id)
     {
         bot.send_message(msg.chat.id, "Unauthorized.").await?;
@@ -282,11 +289,14 @@ async fn handle_message(
         }
     }
 
+    // KB owner: group chat → shared (chat_id), private → personal (user_id)
+    let kb_owner_id = if is_group { msg.chat.id.0.unsigned_abs() } else { user_id };
+
     // Check for media group (multiple files sent at once)
     if let Some(group_id) = msg.media_group_id() {
         info!("Media group detected: group_id={group_id}, has_doc={}, has_photo={}", msg.document().is_some(), msg.photo().is_some());
         if msg.document().is_some() || msg.photo().is_some() {
-            return handle_media_group_file(&msg, &bot, &state, user_id, group_id).await;
+            return handle_media_group_file(&msg, &bot, &state, user_id, kb_owner_id, group_id).await;
         }
     }
 
@@ -294,14 +304,14 @@ async fn handle_message(
     if let Some(photos) = msg.photo() {
         if !photos.is_empty() {
             let caption = msg.caption().unwrap_or("Analyze this image");
-            return handle_photo(&msg, &bot, &state, photos, caption, user_id).await;
+            return handle_photo(&msg, &bot, &state, photos, caption, user_id, kb_owner_id).await;
         }
     }
 
     // Check for document/file
     if let Some(doc) = msg.document() {
         let caption = msg.caption().unwrap_or("Analyze this file");
-        return handle_document(&msg, &bot, &state, doc, caption, user_id).await;
+        return handle_document(&msg, &bot, &state, doc, caption, user_id, kb_owner_id).await;
     }
 
     // Get text content, strip @bot_username mention
@@ -337,6 +347,7 @@ async fn handle_photo(
     photos: &[teloxide::types::PhotoSize],
     caption: &str,
     user_id: u64,
+    kb_owner_id: u64,
 ) -> ResponseResult<()> {
     // Get highest resolution photo (last in array)
     let photo = &photos[photos.len() - 1];
@@ -364,9 +375,9 @@ async fn handle_photo(
         }
     };
 
-    // Save to disk
+    // Save to disk (group files → shared dir, private → personal dir)
     let photo_name = file_path.rsplit('/').next().unwrap_or("photo.jpg");
-    save_file_to_disk(user_id, photo_name, &image_bytes).await;
+    save_file_to_disk(kb_owner_id, photo_name, &image_bytes).await;
 
     // Detect media type from file extension
     let media_type = if file_path.ends_with(".png") {
@@ -403,6 +414,7 @@ async fn handle_document(
     doc: &teloxide::types::Document,
     caption: &str,
     user_id: u64,
+    kb_owner_id: u64,
 ) -> ResponseResult<()> {
     let file_name = doc.file_name.as_deref().unwrap_or("unknown");
     let mime = doc.mime_type.as_ref().map(|m| m.to_string()).unwrap_or_default();
@@ -476,8 +488,8 @@ async fn handle_document(
         }
     };
 
-    // Save to disk
-    save_file_to_disk(user_id, file_name, &file_bytes).await;
+    // Save to disk (group files → shared dir, private → personal dir)
+    save_file_to_disk(kb_owner_id, file_name, &file_bytes).await;
 
     if is_image {
         // Handle as image
@@ -667,9 +679,9 @@ async fn run_agent_and_respond_inner(
     // Load user's preferred model
     let model = state.db.get_user_model(user_id);
 
-    // Build system prompt with memory
+    // Build system prompt with memory (personal) and file path scoped to KB owner
     let memory_ctx = state.db.build_memory_context(user_id);
-    let user_prompt = state.base_prompt.replace("{USER_ID}", &user_id.to_string());
+    let user_prompt = state.base_prompt.replace("{USER_ID}", &kb_owner_id.to_string());
     let mut system_prompt = skills::build_system_prompt(&user_prompt, &memory_ctx);
 
     // Auto-RAG: pre-search knowledge (scoped to KB owner) + memory (personal) before LLM call
@@ -702,8 +714,8 @@ async fn run_agent_and_respond_inner(
         }
     }
 
-    // Load conversation history
-    let session_id = state.db.get_or_create_session(user_id);
+    // Load conversation history (group → shared session, private → personal session)
+    let session_id = state.db.get_or_create_session(kb_owner_id);
     let raw_history = state.db.load_history(&session_id, 6);
     let history: Vec<Message> = raw_history
         .into_iter()
@@ -846,6 +858,7 @@ async fn handle_media_group_file(
     bot: &Bot,
     state: &Arc<AppState>,
     user_id: u64,
+    kb_owner_id: u64,
     group_id: &str,
 ) -> ResponseResult<()> {
     // Determine file_id, file_name, is_image — NO download here (instant)
@@ -879,6 +892,7 @@ async fn handle_media_group_file(
             caption: String::new(),
             chat_id,
             user_id,
+            kb_owner_id,
             counter: 0,
         });
         entry.files.push(MediaGroupFile {
@@ -953,8 +967,8 @@ async fn process_media_group(
             }
         };
 
-        // Save to disk
-        let saved_path = save_file_to_disk(group_data.user_id, &file.file_name, &file_bytes).await;
+        // Save to disk (group files → shared dir)
+        let saved_path = save_file_to_disk(group_data.kb_owner_id, &file.file_name, &file_bytes).await;
 
         // Extract content or reference image path
         combined.push_str(&format!("=== File: {} ===\n", file.file_name));
@@ -963,7 +977,7 @@ async fn process_media_group(
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| {
                     let home = std::env::var("HOME").unwrap_or_default();
-                    format!("{}/documents/{}/{}", home, group_data.user_id, file.file_name)
+                    format!("{}/documents/{}/{}", home, group_data.kb_owner_id, file.file_name)
                 });
             combined.push_str(&format!("[Image file — use image_read tool with path \"{path}\" to view and analyze this image]"));
         } else {

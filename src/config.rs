@@ -4,6 +4,7 @@ use std::collections::HashMap;
 pub struct Config {
     pub telegram_bot_token: String,
     pub allowed_users: Vec<u64>,
+    pub allowed_groups: Vec<u64>,
     pub claude_keys: Vec<String>,
     pub max_agent_turns: usize,
     pub voyage_api_key: Option<String>,
@@ -23,6 +24,15 @@ impl Config {
                 .expect("TELEGRAM_BOT_TOKEN is required in .env"),
             allowed_users: env
                 .get("TELEGRAM_ALLOWED_USERS")
+                .map(|s| {
+                    s.split(',')
+                        .filter(|s| !s.is_empty())
+                        .filter_map(|s| s.trim().parse().ok())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            allowed_groups: env
+                .get("TELEGRAM_ALLOWED_GROUPS")
                 .map(|s| {
                     s.split(',')
                         .filter(|s| !s.is_empty())
