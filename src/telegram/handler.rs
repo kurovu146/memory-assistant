@@ -70,6 +70,7 @@ Private Second Brain — Telegram Knowledge Assistant.
 Always loyal to your owner. Never expose secrets in output.
 Vietnamese by default, English if user writes in English.
 Keep responses concise (Telegram format).
+In group chats, messages are prefixed with [Sender Name]. Always address the correct person by name. Different users may have different permissions.
 
 ## SYSTEM INFO
 - Embedding: {embedding_status}
@@ -257,6 +258,15 @@ async fn save_file_to_disk(user_id: u64, file_name: &str, data: &[u8]) -> Option
     }
 }
 
+/// Get display name for a Telegram user
+fn get_display_name(user: &teloxide::types::User) -> String {
+    if let Some(last) = &user.last_name {
+        format!("{} {}", user.first_name, last)
+    } else {
+        user.first_name.clone()
+    }
+}
+
 async fn handle_message(
     msg: teloxide::types::Message,
     bot: Bot,
@@ -343,9 +353,17 @@ async fn handle_message(
         return handle_command(&msg, &bot, &state, &text, user_id, kb_owner_id).await;
     }
 
+    // In groups, prefix sender name so LLM can distinguish users
+    let (agent_text, history_text) = if is_group {
+        let name = msg.from.as_ref().map(|u| get_display_name(u)).unwrap_or_default();
+        (format!("[{name}]: {text}"), format!("[{name}]: {text}"))
+    } else {
+        (text.clone(), text.clone())
+    };
+
     // Run agent with text
-    let content = MessageContent::Text(text.clone());
-    run_agent_and_respond(&msg, &bot, &state, user_id, &text, content).await
+    let content = MessageContent::Text(agent_text);
+    run_agent_and_respond(&msg, &bot, &state, user_id, &history_text, content).await
 }
 
 /// Handle photo messages: download image → base64 → send to Claude vision
@@ -405,9 +423,20 @@ async fn handle_photo(
 
     info!("Photo received: {} bytes, {media_type}", image_bytes.len());
 
-    let history_text = format!("[Image: {media_type}] {caption}");
+    let sender = msg.from.as_ref().map(|u| get_display_name(u)).unwrap_or_default();
+    let is_grp = msg.chat.id.0 < 0;
+    let history_text = if is_grp {
+        format!("[{sender}] [Image: {media_type}] {caption}")
+    } else {
+        format!("[Image: {media_type}] {caption}")
+    };
+    let agent_caption = if is_grp {
+        format!("[{sender}]: {caption}")
+    } else {
+        caption.to_string()
+    };
     let content = MessageContent::ImageWithText {
-        text: caption.to_string(),
+        text: agent_caption,
         image_base64,
         media_type: media_type.to_string(),
     };
@@ -593,8 +622,18 @@ async fn handle_document(
 
     info!("Text file received: {file_name}, {} chars", truncated.len());
 
-    let prompt = format!("File: {file_name}\n\n```\n{truncated}\n```\n\n{caption}");
-    let history_text = format!("[File: {file_name}] {caption}");
+    let sender = msg.from.as_ref().map(|u| get_display_name(u)).unwrap_or_default();
+    let is_grp = msg.chat.id.0 < 0;
+    let prompt = if is_grp {
+        format!("[{sender}] File: {file_name}\n\n```\n{truncated}\n```\n\n{caption}")
+    } else {
+        format!("File: {file_name}\n\n```\n{truncated}\n```\n\n{caption}")
+    };
+    let history_text = if is_grp {
+        format!("[{sender}] [File: {file_name}] {caption}")
+    } else {
+        format!("[File: {file_name}] {caption}")
+    };
     let content = MessageContent::Text(prompt);
 
     run_agent_with_direct_content(msg, bot, state, user_id, &history_text, content).await
