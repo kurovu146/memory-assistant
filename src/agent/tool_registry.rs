@@ -329,6 +329,8 @@ impl ToolRegistry {
                 let name = args["name"].as_str().unwrap_or("");
                 if name.is_empty() {
                     "Error: name cannot be empty".into()
+                } else if name == "preference" {
+                    "Error: category 'preference' is protected and cannot be deleted.".into()
                 } else {
                     match db.delete_category(kb_owner_id, name) {
                         Ok(true) => format!("Category '{name}' deleted."),

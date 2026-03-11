@@ -412,14 +412,28 @@ impl Database {
                 .push(fact.clone());
         }
 
-        let mut ctx = String::from("\n--- MEMORY ---\n");
-        for (cat, items) in &grouped {
-            ctx.push_str(&format!("\n[{cat}]\n"));
-            for item in items {
+        let mut ctx = String::new();
+
+        // "preference" category loaded first — communication rules, conventions, identity
+        if let Some(prefs) = grouped.remove("preference") {
+            ctx.push_str("\n--- CORE PREFERENCES (always active, never delete this category) ---\n");
+            for item in &prefs {
                 ctx.push_str(&format!("- {item}\n"));
             }
+            ctx.push_str("--- END CORE PREFERENCES ---\n");
         }
-        ctx.push_str("\n--- END MEMORY ---\n");
+
+        // Other categories
+        if !grouped.is_empty() {
+            ctx.push_str("\n--- MEMORY ---\n");
+            for (cat, items) in &grouped {
+                ctx.push_str(&format!("\n[{cat}]\n"));
+                for item in items {
+                    ctx.push_str(&format!("- {item}\n"));
+                }
+            }
+            ctx.push_str("\n--- END MEMORY ---\n");
+        }
         ctx
     }
 

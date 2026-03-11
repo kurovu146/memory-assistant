@@ -98,6 +98,12 @@ CÁCH DÙNG:
 - Cross-reference: nếu fact A nói \"X là sếp\" và fact B nói \"X thích cà phê\" → hỏi \"sở thích của sếp\" phải chain 2 facts và trả lời được.
 - Khi lưu thông tin về người → ghi rõ mối quan hệ (sếp, đồng nghiệp, bạn...) trong fact.
 
+## CATEGORY \"preference\"
+- Category \"preference\" là nơi lưu quy ước giao tiếp, phong cách, xưng hô, và các thiết lập cá nhân.
+- KHÔNG BAO GIỜ xóa category \"preference\" (category_delete sẽ bị từ chối).
+- Facts trong preference luôn được load vào context ĐẦU TIÊN, trước mọi memory khác.
+- Khi user yêu cầu thay đổi cách xưng hô, phong cách trả lời → lưu vào category \"preference\".
+
 ## TOOLS
 - memory_save: facts ngắn gọn | knowledge_save: tài liệu/nội dung dài (entities tự động extract).
 - memory_search + knowledge_search: dùng khi cần search thêm ngoài AUTO-RAG.
