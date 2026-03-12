@@ -724,8 +724,8 @@ async fn run_agent_and_respond_inner(
         });
     };
 
-    // Load user's preferred model
-    let model = state.db.get_user_model(user_id);
+    // Load model preference scoped to chat (private=user_id, group=chat_id)
+    let model = state.db.get_chat_model(kb_owner_id);
 
     // Build system prompt with memory and file path scoped to KB owner
     let memory_ctx = state.db.build_memory_context(kb_owner_id);
@@ -1132,7 +1132,7 @@ async fn handle_command(
             {
                 bot.send_message(msg.chat.id, "Only whitelisted users can change the model.").await?;
             } else {
-                handle_model_command(msg, bot, state, text, user_id).await?;
+                handle_model_command(msg, bot, state, text, kb_owner_id).await?;
             }
         }
         cmd if cmd.starts_with("/pending") => {
@@ -1271,7 +1271,7 @@ async fn handle_model_command(
     bot: &Bot,
     state: &AppState,
     text: &str,
-    user_id: u64,
+    scope_id: u64,
 ) -> ResponseResult<()> {
     use crate::provider::model_registry;
 
@@ -1279,7 +1279,7 @@ async fn handle_model_command(
 
     if arg.is_empty() {
         // Show current model + list available
-        let current = state.db.get_user_model(user_id);
+        let current = state.db.get_chat_model(scope_id);
         let current_info = model_registry::resolve_model(&current);
         let current_label = current_info.map(|m| m.label).unwrap_or("Unknown");
 
@@ -1320,7 +1320,7 @@ async fn handle_model_command(
                     return Ok(());
                 }
 
-                state.db.set_user_model(user_id, model_info.id);
+                state.db.set_chat_model(scope_id, model_info.id);
                 bot.send_message(
                     msg.chat.id,
                     format!("Model switched to *{}* (`{}`)", model_info.label, model_info.id),
