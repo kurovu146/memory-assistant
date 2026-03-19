@@ -50,18 +50,6 @@ ModelInfo {
         provider: ProviderType::Kimi,
         label: "Kimi K2.5",
     },
-    ModelInfo {
-        id: "kimi-k2-turbo-preview",
-        shortcut: "kimi-turbo",
-        provider: ProviderType::Kimi,
-        label: "Kimi K2 Turbo",
-    },
-    ModelInfo {
-        id: "kimi-k2-thinking",
-        shortcut: "kimi-think",
-        provider: ProviderType::Kimi,
-        label: "Kimi K2 Thinking",
-    },
 ];
 
 /// Resolve a model by shortcut or full ID. Returns None if not found.
