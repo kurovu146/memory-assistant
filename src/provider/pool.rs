@@ -123,7 +123,7 @@ impl ProviderPool {
                     .kimi_key
                     .as_deref()
                     .ok_or(ProviderError::NoKeys)?;
-                let base_url = "https://api.moonshot.cn/v1";
+                let base_url = "https://api.moonshot.ai/v1";
                 info!("Trying Kimi: model={model}");
                 let response = self
                     .openai_compat
