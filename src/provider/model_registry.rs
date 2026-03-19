@@ -3,6 +3,7 @@ pub enum ProviderType {
     Claude,
     OpenAI,
     Gemini,
+    Kimi,
 }
 
 pub struct ModelInfo {
@@ -42,6 +43,12 @@ ModelInfo {
         shortcut: "gemini-pro",
         provider: ProviderType::Gemini,
         label: "Gemini 3 Flash",
+    },
+    ModelInfo {
+        id: "kimi-k2.5",
+        shortcut: "kimi",
+        provider: ProviderType::Kimi,
+        label: "Kimi K2.5",
     },
 ];
 
