@@ -98,6 +98,7 @@ impl AgentLoop {
                 content: MessageContent::AssistantWithToolCalls {
                     text: response.content.clone(),
                     tool_calls: response.tool_calls.clone(),
+                    reasoning_content: response.reasoning_content.clone(),
                 },
             });
 

@@ -118,7 +118,7 @@ fn build_claude_messages(messages: &[Message]) -> (String, Vec<serde_json::Value
                 }));
             }
             // Assistant with tool calls → content blocks
-            (Role::Assistant, MessageContent::AssistantWithToolCalls { text, tool_calls }) => {
+            (Role::Assistant, MessageContent::AssistantWithToolCalls { text, tool_calls, .. }) => {
                 let mut content_blocks: Vec<serde_json::Value> = Vec::new();
 
                 if let Some(t) = text {
@@ -307,5 +307,6 @@ async fn parse_claude_response(resp: reqwest::Response) -> Result<LlmResponse, P
         content,
         tool_calls,
         usage,
+        reasoning_content: None,
     })
 }

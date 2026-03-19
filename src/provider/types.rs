@@ -42,6 +42,9 @@ pub enum MessageContent {
     AssistantWithToolCalls {
         text: Option<String>,
         tool_calls: Vec<ToolCall>,
+        /// Reasoning content from thinking models (e.g. Kimi K2 Thinking)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_content: Option<String>,
     },
 }
 
@@ -96,6 +99,8 @@ pub struct LlmResponse {
     pub content: Option<String>,
     pub tool_calls: Vec<ToolCall>,
     pub usage: Usage,
+    /// Reasoning content from thinking models (e.g. Kimi K2 Thinking)
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -103,10 +103,15 @@ fn build_openai_messages(messages: &[Message]) -> Vec<serde_json::Value> {
                     "content": text,
                 }));
             }
-            (Role::Assistant, MessageContent::AssistantWithToolCalls { text, tool_calls }) => {
+            (Role::Assistant, MessageContent::AssistantWithToolCalls { text, tool_calls, reasoning_content }) => {
                 let mut msg_obj = json!({
                     "role": "assistant",
                 });
+
+                // Kimi K2 Thinking: pass back reasoning_content
+                if let Some(rc) = reasoning_content {
+                    msg_obj["reasoning_content"] = json!(rc);
+                }
 
                 if let Some(t) = text {
                     if !t.is_empty() {
@@ -180,6 +185,7 @@ async fn parse_openai_response(resp: reqwest::Response) -> Result<LlmResponse, P
     let message = &choice["message"];
 
     let content = message["content"].as_str().map(|s| s.to_string());
+    let reasoning_content = message["reasoning_content"].as_str().map(|s| s.to_string());
 
     let mut tool_calls: Vec<ToolCall> = Vec::new();
     if let Some(tcs) = message["tool_calls"].as_array() {
@@ -224,5 +230,6 @@ async fn parse_openai_response(resp: reqwest::Response) -> Result<LlmResponse, P
         content,
         tool_calls,
         usage,
+        reasoning_content,
     })
 }
