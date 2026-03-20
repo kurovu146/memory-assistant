@@ -32,12 +32,6 @@ static MODELS: &[ModelInfo] = &[
         provider: ProviderType::OpenAI,
         label: "GPT-5 Mini",
     },
-ModelInfo {
-        id: "gemini-3.1-flash-lite-preview",
-        shortcut: "gemini-flash",
-        provider: ProviderType::Gemini,
-        label: "Gemini 3.1 Flash Lite",
-    },
     ModelInfo {
         id: "gemini-3-flash-preview",
         shortcut: "gemini-pro",
