@@ -215,6 +215,7 @@ async fn parse_openai_response(resp: reqwest::Response) -> Result<LlmResponse, P
     // and/or cache_read_input_tokens / cache_creation_input_tokens
     let cache_read = usage_obj["cache_read_input_tokens"].as_u64()
         .or_else(|| usage_obj["prompt_tokens_details"]["cached_tokens"].as_u64())
+        .or_else(|| usage_obj["cached_tokens"].as_u64())
         .unwrap_or(0) as u32;
     let cache_creation = usage_obj["cache_creation_input_tokens"].as_u64()
         .unwrap_or(0) as u32;
