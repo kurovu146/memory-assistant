@@ -1,7 +1,7 @@
 use tracing::{debug, info, warn};
 
 use crate::db::Database;
-use crate::provider::{Message, MessageContent, ProviderPool, Role};
+use crate::provider::{Message, MessageContent, ProviderPool, Role, Usage};
 
 use super::tool_registry::{ToolOutput, ToolRegistry};
 
@@ -22,6 +22,8 @@ pub struct AgentResult {
     pub tools_count: Vec<usize>,
     pub provider: String,
     pub turns: usize,
+    /// Accumulated usage across all turns.
+    pub usage: Usage,
 }
 
 pub struct AgentLoop;
@@ -49,6 +51,7 @@ impl AgentLoop {
         let tools = ToolRegistry::definitions();
         let mut tools_used: Vec<String> = Vec::new();
         let mut last_provider = String::new();
+        let mut total_usage = Usage::default();
 
         // Build messages: system + history + current user message
         let mut messages = vec![Message {
@@ -69,6 +72,10 @@ impl AgentLoop {
                 .map_err(|e| format!("LLM error: {e}"))?;
 
             last_provider = provider_name;
+            total_usage.prompt_tokens += response.usage.prompt_tokens;
+            total_usage.completion_tokens += response.usage.completion_tokens;
+            total_usage.cache_creation_tokens += response.usage.cache_creation_tokens;
+            total_usage.cache_read_tokens += response.usage.cache_read_tokens;
 
             // If no tool calls, return the text content
             if response.tool_calls.is_empty() {
@@ -77,10 +84,10 @@ impl AgentLoop {
                     "Agent completed in {} turns via {} ({} + {} tokens, cache: {}w/{}r)",
                     turn + 1,
                     last_provider,
-                    response.usage.prompt_tokens,
-                    response.usage.completion_tokens,
-                    response.usage.cache_creation_tokens,
-                    response.usage.cache_read_tokens,
+                    total_usage.prompt_tokens,
+                    total_usage.completion_tokens,
+                    total_usage.cache_creation_tokens,
+                    total_usage.cache_read_tokens,
                 );
                 let (deduped, counts) = dedup_with_counts(&tools_used);
                 return Ok(AgentResult {
@@ -89,6 +96,7 @@ impl AgentLoop {
                     tools_count: counts,
                     provider: last_provider,
                     turns: turn + 1,
+                    usage: total_usage,
                 });
             }
 
@@ -161,6 +169,7 @@ impl AgentLoop {
             tools_count: counts,
             provider: last_provider,
             turns: max_turns,
+            usage: total_usage,
         })
     }
 }

@@ -158,6 +158,20 @@ impl Database {
             );"
         )?;
 
+        // Usage log (cost tracking per model)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS usage_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );"
+        )?;
+
         // User preferences
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS user_preferences (
@@ -916,6 +930,54 @@ impl Database {
     }
 
     // --- Entities ---
+
+    // --- Usage Log ---
+
+    pub fn log_usage(
+        &self,
+        model: &str,
+        provider: &str,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        cache_creation_tokens: u32,
+        cache_read_tokens: u32,
+    ) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "INSERT INTO usage_log (model, provider, prompt_tokens, completion_tokens, cache_creation_tokens, cache_read_tokens) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![model, provider, prompt_tokens, completion_tokens, cache_creation_tokens, cache_read_tokens],
+        );
+    }
+
+    /// Get usage summary grouped by model for the current month.
+    pub fn get_monthly_usage(&self) -> Vec<(String, String, u64, u64, u64, u64, u64)> {
+        let conn = self.conn.lock().unwrap();
+        conn.prepare(
+            "SELECT model, provider,
+                    SUM(prompt_tokens), SUM(completion_tokens),
+                    SUM(cache_creation_tokens), SUM(cache_read_tokens),
+                    COUNT(*)
+             FROM usage_log
+             WHERE created_at >= strftime('%Y-%m-01', 'now')
+             GROUP BY model
+             ORDER BY SUM(prompt_tokens) + SUM(completion_tokens) DESC"
+        )
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get::<_, i64>(2)? as u64,
+                    row.get::<_, i64>(3)? as u64,
+                    row.get::<_, i64>(4)? as u64,
+                    row.get::<_, i64>(5)? as u64,
+                    row.get::<_, i64>(6)? as u64,
+                ))
+            })?;
+            rows.collect()
+        })
+        .unwrap_or_default()
+    }
 
     pub fn search_entities(
         &self,

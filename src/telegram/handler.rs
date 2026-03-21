@@ -813,6 +813,16 @@ async fn run_agent_and_respond_inner(
                 formatter::clean_response(&agent_result.response, &agent_result.tools_used)
             };
 
+            // Log usage for cost tracking
+            state.db.log_usage(
+                &model,
+                &agent_result.provider,
+                agent_result.usage.prompt_tokens,
+                agent_result.usage.completion_tokens,
+                agent_result.usage.cache_creation_tokens,
+                agent_result.usage.cache_read_tokens,
+            );
+
             // Save assistant response to history
             state.db.append_message(&session_id, "assistant", &cleaned);
 
@@ -1088,6 +1098,7 @@ async fn handle_command(
                  /memory — List saved memories\n\
                  /category — List memory categories\n\
                  /model — Switch AI model\n\
+                 /cost — View usage costs this month\n\
                  /pending — View pending requests\n\
                  /approve <id> — Approve a request\n\
                  /reject <id> — Reject a request\n\n\
@@ -1135,6 +1146,9 @@ async fn handle_command(
             } else {
                 handle_model_command(msg, bot, state, text, kb_owner_id).await?;
             }
+        }
+        "/cost" => {
+            handle_cost_command(msg, bot, state).await?;
         }
         cmd if cmd.starts_with("/pending") => {
             handle_pending_command(msg, bot, state, user_id, kb_owner_id).await?;
@@ -1265,6 +1279,62 @@ async fn handle_reject_command(
         }
     }
     Ok(())
+}
+
+async fn handle_cost_command(
+    msg: &teloxide::types::Message,
+    bot: &Bot,
+    state: &AppState,
+) -> Result<(), teloxide::RequestError> {
+    use crate::provider::model_registry;
+
+    let usage_data = state.db.get_monthly_usage();
+    if usage_data.is_empty() {
+        bot.send_message(msg.chat.id, "📊 No usage recorded this month.").await?;
+        return Ok(());
+    }
+
+    let now = chrono::Utc::now();
+    let month_label = now.format("%m/%Y");
+    let mut lines = vec![format!("📊 Chi phí sử dụng (tháng {month_label})\n")];
+    let mut grand_total = 0.0f64;
+    let mut total_requests = 0u64;
+
+    for (model, _provider, prompt, completion, cache_write, cache_read, requests) in &usage_data {
+        let (ci, co, cw, cr) = model_registry::calculate_cost(
+            model, *prompt, *completion, *cache_write, *cache_read,
+        );
+        let subtotal = ci + co + cw + cr;
+        grand_total += subtotal;
+        total_requests += requests;
+
+        let label = model_registry::resolve_model(model)
+            .map(|m| m.label)
+            .unwrap_or(model.as_str());
+
+        lines.push(format!("{label}"));
+        lines.push(format!("  Input: {} tokens (${:.4})", format_tokens(*prompt), ci));
+        lines.push(format!("  Output: {} tokens (${:.4})", format_tokens(*completion), co));
+        lines.push(format!("  Cache write: {} tokens (${:.4})", format_tokens(*cache_write), cw));
+        lines.push(format!("  Cache read: {} tokens (${:.4})", format_tokens(*cache_read), cr));
+        lines.push(format!("  → Subtotal: ${:.4}\n", subtotal));
+    }
+
+    lines.push(format!("💰 Tổng tháng: ${:.4}", grand_total));
+    lines.push(format!("📈 Requests: {total_requests}"));
+
+    bot.send_message(msg.chat.id, &lines.join("\n")).await?;
+    Ok(())
+}
+
+fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 async fn handle_model_command(
