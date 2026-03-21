@@ -22,7 +22,7 @@ static MODELS: &[ModelInfo] = &[
         provider: ProviderType::Claude,
         label: "Claude Haiku 4.5",
         // input, output, cache_write, cache_read per 1M tokens (USD)
-        pricing: (0.80, 4.00, 1.00, 0.08),
+        pricing: (1.00, 5.00, 1.25, 0.10),
     },
     ModelInfo {
         id: "claude-sonnet-4-6",
@@ -36,21 +36,21 @@ static MODELS: &[ModelInfo] = &[
         shortcut: "gpt-5-mini",
         provider: ProviderType::OpenAI,
         label: "GPT-5 Mini",
-        pricing: (0.40, 1.60, 0.00, 0.20),
+        pricing: (0.25, 2.00, 0.00, 0.025),
     },
     ModelInfo {
         id: "gemini-3-flash-preview",
         shortcut: "gemini-pro",
         provider: ProviderType::Gemini,
         label: "Gemini 3 Flash",
-        pricing: (0.10, 0.40, 0.025, 0.025),
+        pricing: (0.50, 3.00, 0.625, 0.05),
     },
     ModelInfo {
         id: "kimi-k2.5",
         shortcut: "kimi",
         provider: ProviderType::Kimi,
         label: "Kimi K2.5",
-        pricing: (0.20, 0.90, 0.00, 0.02),
+        pricing: (0.60, 3.00, 0.00, 0.10),
     },
 ];
 

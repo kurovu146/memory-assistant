@@ -1308,11 +1308,20 @@ async fn handle_cost_command(
         grand_total += subtotal;
         total_requests += requests;
 
-        let label = model_registry::resolve_model(model)
-            .map(|m| m.label)
-            .unwrap_or(model.as_str());
+        let model_info = model_registry::resolve_model(model);
+        let label = model_info.map(|m| m.label).unwrap_or(model.as_str());
+        let pricing_label = model_info
+            .map(|m| {
+                let (pi, po, _pw, pr) = m.pricing;
+                if pr > 0.0 {
+                    format!(" (${pi} | ${po} | ${pr} /1M)")
+                } else {
+                    format!(" (${pi} | ${po} /1M)")
+                }
+            })
+            .unwrap_or_default();
 
-        lines.push(format!("{label}"));
+        lines.push(format!("{label}{pricing_label}"));
         lines.push(format!("  Input: {} tokens (${:.4})", format_tokens(*prompt), ci));
         lines.push(format!("  Output: {} tokens (${:.4})", format_tokens(*completion), co));
         lines.push(format!("  Cache write: {} tokens (${:.4})", format_tokens(*cache_write), cw));
