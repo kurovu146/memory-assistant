@@ -64,6 +64,17 @@ impl ToolRegistry {
                     "required": ["id"]
                 }),
             ),
+            tool_def("memory_edit",
+                "Edit an existing fact in long-term memory by its ID. Use memory_list or memory_search to find the ID first.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "integer", "description": "The fact ID to edit" },
+                        "new_fact": { "type": "string", "description": "The updated fact text" }
+                    },
+                    "required": ["id", "new_fact"]
+                }),
+            ),
             // --- Categories ---
             tool_def("category_list",
                 "List all available memory categories for this user.",
@@ -273,7 +284,7 @@ impl ToolRegistry {
 
     /// Tools that modify memory/knowledge — restricted to whitelisted users in group chats.
     const WRITE_TOOLS: &'static [&'static str] = &[
-        "memory_save", "memory_delete",
+        "memory_save", "memory_edit", "memory_delete",
         "category_add", "category_delete",
         "knowledge_save", "knowledge_patch", "knowledge_delete",
     ];
@@ -321,6 +332,19 @@ impl ToolRegistry {
             "memory_list" => {
                 let category = args["category"].as_str();
                 tools::memory_list(db, kb_owner_id, category).await
+            }
+            "memory_edit" => {
+                let id = args["id"].as_i64().unwrap_or(0);
+                let new_fact = args["new_fact"].as_str().unwrap_or("");
+                if new_fact.is_empty() {
+                    "Error: new_fact cannot be empty".into()
+                } else {
+                    match db.update_fact(kb_owner_id, id, new_fact) {
+                        Ok(true) => format!("Updated memory #{id}: \"{new_fact}\""),
+                        Ok(false) => format!("Memory #{id} not found."),
+                        Err(e) => format!("Error: {e}"),
+                    }
+                }
             }
             "memory_delete" => {
                 let id = args["id"].as_i64().unwrap_or(0);
@@ -535,6 +559,12 @@ impl ToolRegistry {
                 let cat = args["category"].as_str().unwrap_or("general");
                 let preview: String = fact.chars().take(100).collect();
                 format!("[memory_save] [{cat}] {preview}")
+            }
+            "memory_edit" => {
+                let id = args["id"].as_i64().unwrap_or(0);
+                let new_fact = args["new_fact"].as_str().unwrap_or("");
+                let preview: String = new_fact.chars().take(100).collect();
+                format!("[memory_edit] #{id} → {preview}")
             }
             "memory_delete" => {
                 let id = args["id"].as_i64().unwrap_or(0);

@@ -190,6 +190,7 @@ Available tools:
 - memory_save: Save a short fact into long-term memory
 - memory_search: Search stored facts by keyword
 - memory_list: List all stored facts (optional filtering by category)
+- memory_edit: Edit a fact by ID
 - memory_delete: Delete a fact by ID
 - category_list: List all available memory categories
 - category_add: Create a new memory category

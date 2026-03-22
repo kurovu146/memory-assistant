@@ -287,6 +287,28 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
 
+    pub fn update_fact(&self, user_id: u64, fact_id: i64, new_fact: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE memory_facts SET fact = ?1 WHERE id = ?2 AND user_id = ?3",
+                params![new_fact, fact_id, user_id as i64],
+            )
+            .map_err(|e| e.to_string())?;
+        if rows > 0 {
+            // Re-index FTS
+            let _ = conn.execute(
+                "INSERT INTO memory_facts_fts(memory_facts_fts, rowid, fact) VALUES('delete', ?1, '')",
+                params![fact_id],
+            );
+            let _ = conn.execute(
+                "INSERT INTO memory_facts_fts(rowid, fact) VALUES (?1, ?2)",
+                params![fact_id, new_fact],
+            );
+        }
+        Ok(rows > 0)
+    }
+
     pub fn delete_fact(&self, user_id: u64, fact_id: i64) -> Result<bool, String> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
