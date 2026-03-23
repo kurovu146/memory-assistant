@@ -1471,7 +1471,7 @@ async fn handle_cost_command(
             })
             .unwrap_or_default();
 
-        lines.push(format!("{label}{pricing_label}"));
+        lines.push(format!("{label}{pricing_label} — {requests} req"));
         lines.push(format!("  Input: {} tokens (${:.4})", format_tokens(*prompt), ci));
         lines.push(format!("  Output: {} tokens (${:.4})", format_tokens(*completion), co));
         lines.push(format!("  Cache write: {} tokens (${:.4})", format_tokens(*cache_write), cw));
