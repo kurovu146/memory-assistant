@@ -97,6 +97,25 @@ fn build_openai_messages(messages: &[Message]) -> Vec<serde_json::Value> {
                     ],
                 }));
             }
+            (Role::User, MessageContent::MultiImageWithText { text, images }) => {
+                let mut content_blocks: Vec<serde_json::Value> = Vec::new();
+                for img in images {
+                    content_blocks.push(json!({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!("data:{};base64,{}", img.media_type, img.image_base64),
+                        }
+                    }));
+                }
+                content_blocks.push(json!({
+                    "type": "text",
+                    "text": text,
+                }));
+                api_messages.push(json!({
+                    "role": "user",
+                    "content": content_blocks,
+                }));
+            }
             (Role::Assistant, MessageContent::Text(text)) => {
                 api_messages.push(json!({
                     "role": "assistant",

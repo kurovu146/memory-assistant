@@ -338,6 +338,29 @@ async fn safe_edit(bot: &Bot, chat_id: ChatId, msg_id: i32, text: &str) {
     }
 }
 
+/// Detect image MIME type from file path/name extension.
+fn detect_media_type(file_path: &str, file_name: &str) -> &'static str {
+    if file_path.ends_with(".png") || file_name.ends_with(".png") {
+        "image/png"
+    } else if file_path.ends_with(".gif") || file_name.ends_with(".gif") {
+        "image/gif"
+    } else if file_path.ends_with(".webp") || file_name.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    }
+}
+
+/// Resolve the saved file path, falling back to the default documents dir.
+fn resolve_saved_path(saved_path: Option<PathBuf>, kb_owner_id: u64, file_name: &str) -> String {
+    saved_path
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            format!("{}/documents/{}/{}", home, kb_owner_id, file_name)
+        })
+}
+
 /// Save uploaded file to ~/documents/{user_id}/{file_name}.
 /// Creates directories if needed. Skips if identical content already saved.
 /// Adds _1, _2... suffix if same name but different content.
@@ -555,25 +578,16 @@ async fn handle_photo(
 
     // Save to disk (group files → shared dir, private → personal dir)
     let photo_name = file_path.rsplit('/').next().unwrap_or("photo.jpg");
-    save_file_to_disk(kb_owner_id, photo_name, &image_bytes).await;
+    let saved_path = save_file_to_disk(kb_owner_id, photo_name, &image_bytes).await;
 
-    // Detect media type from file extension
-    let media_type = if file_path.ends_with(".png") {
-        "image/png"
-    } else if file_path.ends_with(".gif") {
-        "image/gif"
-    } else if file_path.ends_with(".webp") {
-        "image/webp"
-    } else {
-        "image/jpeg"
-    };
+    let media_type = detect_media_type(file_path, photo_name);
 
-    // Encode to base64
     use base64::Engine;
     let image_base64 = base64::engine::general_purpose::STANDARD.encode(&image_bytes);
 
     info!("Photo received: {} bytes, {media_type}", image_bytes.len());
 
+    let path_str = resolve_saved_path(saved_path, kb_owner_id, photo_name);
     let sender = msg.from.as_ref().map(|u| get_display_name(u)).unwrap_or_default();
     let is_grp = msg.chat.id.0 < 0;
     let history_text = if is_grp {
@@ -582,9 +596,9 @@ async fn handle_photo(
         format!("[Image: {media_type}] {caption}")
     };
     let agent_caption = if is_grp {
-        format!("[{sender}]: {caption}")
+        format!("[{sender}]: [Image saved at {path_str}]\n{caption}")
     } else {
-        caption.to_string()
+        format!("[Image saved at {path_str}]\n{caption}")
     };
     let content = MessageContent::ImageWithText {
         text: agent_caption,
@@ -1160,39 +1174,42 @@ async fn process_media_group(
     info!("Processing media group {group_id}: {file_count} files");
 
     // Download + extract all files now (after all files have been buffered)
-    let mut combined = String::new();
+    use base64::Engine;
+    use crate::provider::ImageData;
+
+    let mut images: Vec<ImageData> = Vec::new();
+    let mut text_parts = String::new();
     let mut file_names = Vec::new();
 
     for file in &group_data.files {
         file_names.push(file.file_name.clone());
 
         // Download from Telegram
-        let file_bytes = match download_telegram_file(bot, &state.telegram_token, &file.file_id).await {
-            Some((_, bytes)) => bytes,
+        let (file_path, bytes) = match download_telegram_file(bot, &state.telegram_token, &file.file_id).await {
+            Some(result) => result,
             None => {
                 error!("Failed to download media group file: {}", file.file_name);
-                combined.push_str(&format!("=== File: {} ===\n[Download failed]\n\n", file.file_name));
+                text_parts.push_str(&format!("=== File: {} ===\n[Download failed]\n\n", file.file_name));
                 continue;
             }
         };
 
-        // Save to disk (group files → shared dir)
-        let saved_path = save_file_to_disk(group_data.kb_owner_id, &file.file_name, &file_bytes).await;
+        // Save to disk
+        let saved_path = save_file_to_disk(group_data.kb_owner_id, &file.file_name, &bytes).await;
 
-        // Extract content or reference image path
-        combined.push_str(&format!("=== File: {} ===\n", file.file_name));
         if file.is_image {
-            let path = saved_path
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| {
-                    let home = std::env::var("HOME").unwrap_or_default();
-                    format!("{}/documents/{}/{}", home, group_data.kb_owner_id, file.file_name)
-                });
-            combined.push_str(&format!("[Image file — use image_read tool with path \"{path}\" to view and analyze this image]"));
+            let media_type = detect_media_type(&file_path, &file.file_name);
+            let path_str = resolve_saved_path(saved_path, group_data.kb_owner_id, &file.file_name);
+            text_parts.push_str(&format!("[Image {}: saved at {}]\n", file.file_name, path_str));
+            images.push(ImageData {
+                image_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                media_type: media_type.to_string(),
+            });
         } else {
-            combined.push_str(&extract_file_for_prompt(&file.file_name, &file_bytes));
+            text_parts.push_str(&format!("=== File: {} ===\n", file.file_name));
+            text_parts.push_str(&extract_file_for_prompt(&file.file_name, &bytes));
+            text_parts.push_str("\n\n");
         }
-        combined.push_str("\n\n");
     }
 
     let caption = if group_data.caption.is_empty() {
@@ -1200,10 +1217,23 @@ async fn process_media_group(
     } else {
         group_data.caption.clone()
     };
-    combined.push_str(&caption);
+
+    // Build final text: non-image file contents + caption
+    let mut final_text = text_parts;
+    final_text.push_str(&caption);
 
     let history_text = format!("[Files: {}] {}", file_names.join(", "), caption);
-    let content = MessageContent::Text(combined);
+
+    // Use MultiImageWithText if there are images, otherwise plain Text
+    info!("Media group result: {} images inline, {} text bytes", images.len(), final_text.len());
+    let content = if images.is_empty() {
+        MessageContent::Text(final_text)
+    } else {
+        MessageContent::MultiImageWithText {
+            text: final_text,
+            images,
+        }
+    };
 
     run_agent_and_respond_inner(
         group_data.chat_id,

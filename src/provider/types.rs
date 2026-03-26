@@ -1,5 +1,12 @@
 use serde::{Deserialize, Serialize};
 
+/// Image data for multi-image messages
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageData {
+    pub image_base64: String,
+    pub media_type: String,
+}
+
 /// A message in the conversation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -27,6 +34,11 @@ pub enum MessageContent {
         /// MIME type (e.g. "image/jpeg", "image/png")
         media_type: String,
     },
+    /// Multiple images with text (media group)
+    MultiImageWithText {
+        text: String,
+        images: Vec<ImageData>,
+    },
     ToolResult {
         tool_call_id: String,
         name: String,
@@ -53,6 +65,7 @@ impl MessageContent {
         match self {
             MessageContent::Text(s) => s,
             MessageContent::ImageWithText { text, .. } => text,
+            MessageContent::MultiImageWithText { text, .. } => text,
             MessageContent::ToolResult { content, .. } => content,
             MessageContent::ToolResultWithImage { text, .. } => text,
             MessageContent::AssistantWithToolCalls { text, .. } => {

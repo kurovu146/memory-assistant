@@ -110,6 +110,29 @@ fn build_claude_messages(messages: &[Message]) -> (String, Vec<serde_json::Value
                     ],
                 }));
             }
+            // User messages with multiple images → content blocks (images + text)
+            (Role::User, MessageContent::MultiImageWithText { text, images }) => {
+                debug!("MultiImageWithText: {} images, text={}", images.len(), &text[..text.len().min(100)]);
+                let mut content_blocks: Vec<serde_json::Value> = Vec::new();
+                for img in images {
+                    content_blocks.push(json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": img.media_type,
+                            "data": img.image_base64,
+                        }
+                    }));
+                }
+                content_blocks.push(json!({
+                    "type": "text",
+                    "text": text,
+                }));
+                api_messages.push(json!({
+                    "role": "user",
+                    "content": content_blocks,
+                }));
+            }
             // Assistant text-only → simple text
             (Role::Assistant, MessageContent::Text(text)) => {
                 api_messages.push(json!({
