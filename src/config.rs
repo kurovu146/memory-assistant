@@ -12,6 +12,7 @@ pub struct Config {
     pub openai_api_key: Option<String>,
     pub gemini_api_key: Option<String>,
     pub kimi_api_key: Option<String>,
+    pub deepseek_api_key: Option<String>,
 }
 
 impl Config {
@@ -54,6 +55,7 @@ impl Config {
             openai_api_key: env.get("OPENAI_API_KEY").cloned().filter(|s| !s.is_empty()),
             gemini_api_key: env.get("GEMINI_API_KEY").cloned().filter(|s| !s.is_empty()),
             kimi_api_key: env.get("KIMI_API_KEY").cloned().filter(|s| !s.is_empty()),
+            deepseek_api_key: env.get("DEEPSEEK_API_KEY").cloned().filter(|s| !s.is_empty()),
         }
     }
 }

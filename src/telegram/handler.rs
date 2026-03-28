@@ -50,6 +50,7 @@ pub async fn run_bot(config: Config) {
         config.openai_api_key.clone(),
         config.gemini_api_key.clone(),
         config.kimi_api_key.clone(),
+        config.deepseek_api_key.clone(),
     );
 
     let db = Database::open("memory-assistant.db").expect("Failed to open database");
@@ -1828,6 +1829,7 @@ async fn handle_model_command(
                         model_registry::ProviderType::Gemini => "GEMINI_API_KEY",
                         model_registry::ProviderType::Claude => "CLAUDE_API_KEYS",
                         model_registry::ProviderType::Kimi => "KIMI_API_KEY",
+                        model_registry::ProviderType::DeepSeek => "DEEPSEEK_API_KEY",
                     };
                     bot.send_message(
                         msg.chat.id,

@@ -40,6 +40,7 @@ pub struct ProviderPool {
     openai_key: Option<String>,
     gemini_key: Option<String>,
     kimi_key: Option<String>,
+    deepseek_key: Option<String>,
 }
 
 impl ProviderPool {
@@ -48,13 +49,15 @@ impl ProviderPool {
         openai_key: Option<String>,
         gemini_key: Option<String>,
         kimi_key: Option<String>,
+        deepseek_key: Option<String>,
     ) -> Self {
         info!(
-            "Provider pool: Claude ({} keys), OpenAI ({}), Gemini ({}), Kimi ({})",
+            "Provider pool: Claude ({} keys), OpenAI ({}), Gemini ({}), Kimi ({}), DeepSeek ({})",
             claude_keys.len(),
             if openai_key.is_some() { "configured" } else { "none" },
             if gemini_key.is_some() { "configured" } else { "none" },
             if kimi_key.is_some() { "configured" } else { "none" },
+            if deepseek_key.is_some() { "configured" } else { "none" },
         );
         Self {
             claude: ClaudeProvider::new(),
@@ -63,6 +66,7 @@ impl ProviderPool {
             openai_key,
             gemini_key,
             kimi_key,
+            deepseek_key,
         }
     }
 
@@ -73,6 +77,7 @@ impl ProviderPool {
             ProviderType::OpenAI => self.openai_key.is_some(),
             ProviderType::Gemini => self.gemini_key.is_some(),
             ProviderType::Kimi => self.kimi_key.is_some(),
+            ProviderType::DeepSeek => self.deepseek_key.is_some(),
         }
     }
 
@@ -131,6 +136,20 @@ impl ProviderPool {
                     .await?;
                 info!("Kimi succeeded");
                 Ok((response, "kimi".to_string()))
+            }
+            ProviderType::DeepSeek => {
+                let key = self
+                    .deepseek_key
+                    .as_deref()
+                    .ok_or(ProviderError::NoKeys)?;
+                let base_url = "https://api.deepseek.com";
+                info!("Trying DeepSeek: model={model}");
+                let response = self
+                    .openai_compat
+                    .chat(messages, tools, key, model, base_url)
+                    .await?;
+                info!("DeepSeek succeeded");
+                Ok((response, "deepseek".to_string()))
             }
         }
     }

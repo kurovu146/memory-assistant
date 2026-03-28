@@ -230,13 +230,17 @@ async fn parse_openai_response(resp: reqwest::Response) -> Result<LlmResponse, P
     }
 
     let usage_obj = &body["usage"];
-    // Gemini OpenAI compat: cache tokens in prompt_tokens_details.cached_tokens
-    // and/or cache_read_input_tokens / cache_creation_input_tokens
+    // Provider-specific cache token field names:
+    // - Gemini: prompt_tokens_details.cached_tokens or cache_read_input_tokens
+    // - DeepSeek: prompt_cache_hit_tokens / prompt_cache_miss_tokens
+    // - OpenAI: cache_read_input_tokens / cache_creation_input_tokens
     let cache_read = usage_obj["cache_read_input_tokens"].as_u64()
         .or_else(|| usage_obj["prompt_tokens_details"]["cached_tokens"].as_u64())
         .or_else(|| usage_obj["cached_tokens"].as_u64())
+        .or_else(|| usage_obj["prompt_cache_hit_tokens"].as_u64())
         .unwrap_or(0) as u32;
     let cache_creation = usage_obj["cache_creation_input_tokens"].as_u64()
+        .or_else(|| usage_obj["prompt_cache_miss_tokens"].as_u64())
         .unwrap_or(0) as u32;
 
     let usage = Usage {

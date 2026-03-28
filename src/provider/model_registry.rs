@@ -4,6 +4,7 @@ pub enum ProviderType {
     OpenAI,
     Gemini,
     Kimi,
+    DeepSeek,
 }
 
 pub struct ModelInfo {
@@ -51,6 +52,14 @@ static MODELS: &[ModelInfo] = &[
         provider: ProviderType::Kimi,
         label: "Kimi K2.5",
         pricing: (0.60, 3.00, 0.00, 0.10),
+    },
+    ModelInfo {
+        id: "deepseek-chat",
+        shortcut: "deepseek",
+        provider: ProviderType::DeepSeek,
+        label: "DeepSeek V3",
+        // input, output, cache_write, cache_read per 1M tokens (USD)
+        pricing: (0.27, 1.10, 0.27, 0.07),
     },
 ];
 
