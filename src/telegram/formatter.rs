@@ -19,6 +19,22 @@ pub fn clean_response_with_context(text: &str, tools_used: &[String], has_direct
 fn clean_response_inner(text: &str, tools_used: &[String], has_direct_content: bool) -> String {
     let mut result = text.to_string();
 
+    // Remove <thought>...</thought> and <thinking>...</thinking> tags (some models leak internal reasoning)
+    for tag in &["thought", "thinking"] {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        while let Some(start) = result.find(&open) {
+            if let Some(end_offset) = result[start..].find(&close) {
+                let remove_end = start + end_offset + close.len();
+                result = format!("{}{}", &result[..start], result[remove_end..].trim_start());
+            } else {
+                // No closing tag — remove from open tag to end
+                result = result[..start].to_string();
+                break;
+            }
+        }
+    }
+
     // Remove <function=...>{...}</function> patterns (and trailing ...)
     while let Some(start) = result.find("<function=") {
         if let Some(end) = result[start..].find("</function>") {

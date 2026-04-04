@@ -62,17 +62,10 @@ static MODELS: &[ModelInfo] = &[
         pricing: (0.27, 1.10, 0.27, 0.07),
     },
     ModelInfo {
-        id: "gemma-4-e2b-it",
-        shortcut: "gemma-e2b",
+        id: "gemma-4-31b-it",
+        shortcut: "gemma",
         provider: ProviderType::Gemini,
-        label: "Gemma 4 E2B",
-        pricing: (0.0, 0.0, 0.0, 0.0),
-    },
-    ModelInfo {
-        id: "gemma-4-e4b-it",
-        shortcut: "gemma-e4b",
-        provider: ProviderType::Gemini,
-        label: "Gemma 4 E4B",
+        label: "Gemma 4 31B",
         pricing: (0.0, 0.0, 0.0, 0.0),
     },
 ];
