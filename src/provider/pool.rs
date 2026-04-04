@@ -106,8 +106,9 @@ impl ProviderPool {
                     .openai_compat
                     .chat(messages, tools, key, model, base_url)
                     .await?;
+                let label = model_info.map(|m| m.label).unwrap_or("openai");
                 info!("OpenAI succeeded");
-                Ok((response, "openai".to_string()))
+                Ok((response, label.to_string()))
             }
             ProviderType::Gemini => {
                 let key = self
@@ -120,8 +121,9 @@ impl ProviderPool {
                     .openai_compat
                     .chat(messages, tools, key, model, base_url)
                     .await?;
+                let label = model_info.map(|m| m.label).unwrap_or("gemini");
                 info!("Gemini succeeded");
-                Ok((response, "gemini".to_string()))
+                Ok((response, label.to_string()))
             }
             ProviderType::Kimi => {
                 let key = self
@@ -134,8 +136,9 @@ impl ProviderPool {
                     .openai_compat
                     .chat(messages, tools, key, model, base_url)
                     .await?;
+                let label = model_info.map(|m| m.label).unwrap_or("kimi");
                 info!("Kimi succeeded");
-                Ok((response, "kimi".to_string()))
+                Ok((response, label.to_string()))
             }
             ProviderType::DeepSeek => {
                 let key = self
@@ -148,8 +151,9 @@ impl ProviderPool {
                     .openai_compat
                     .chat(messages, tools, key, model, base_url)
                     .await?;
+                let label = model_info.map(|m| m.label).unwrap_or("deepseek");
                 info!("DeepSeek succeeded");
-                Ok((response, "deepseek".to_string()))
+                Ok((response, label.to_string()))
             }
         }
     }
@@ -179,8 +183,9 @@ impl ProviderPool {
                 info!("Trying Claude (key: {}...)", &key[..key.len().min(10)]);
                 match self.claude.chat(messages, tools, key, model).await {
                     Ok(response) => {
+                        let label = model_registry::resolve_model(model).map(|m| m.label).unwrap_or("claude");
                         info!("Claude succeeded");
-                        return Ok((response, "claude".to_string()));
+                        return Ok((response, label.to_string()));
                     }
                     Err(ProviderError::RateLimited) => {
                         warn!(
