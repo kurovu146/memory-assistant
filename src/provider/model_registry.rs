@@ -61,6 +61,20 @@ static MODELS: &[ModelInfo] = &[
         // input, output, cache_write, cache_read per 1M tokens (USD)
         pricing: (0.27, 1.10, 0.27, 0.07),
     },
+    ModelInfo {
+        id: "gemma-4-e2b-it",
+        shortcut: "gemma-e2b",
+        provider: ProviderType::Gemini,
+        label: "Gemma 4 E2B",
+        pricing: (0.0, 0.0, 0.0, 0.0),
+    },
+    ModelInfo {
+        id: "gemma-4-e4b-it",
+        shortcut: "gemma-e4b",
+        provider: ProviderType::Gemini,
+        label: "Gemma 4 E4B",
+        pricing: (0.0, 0.0, 0.0, 0.0),
+    },
 ];
 
 /// Resolve a model by shortcut or full ID. Returns None if not found.
