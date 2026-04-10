@@ -407,6 +407,35 @@ impl Database {
         .map_err(|e| e.to_string())
     }
 
+    /// Delete all relations for a given fact_id (used before recomputing after edit).
+    pub fn delete_fact_relations(&self, fact_id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM fact_relations WHERE fact_id_1 = ?1 OR fact_id_2 = ?1",
+            params![fact_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Batch-link multiple fact pairs in a single transaction.
+    pub fn link_facts_batch(&self, links: &[(i64, i64, f32)]) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
+        for &(id_a, id_b, similarity) in links {
+            let (lo, hi) = if id_a < id_b { (id_a, id_b) } else { (id_b, id_a) };
+            if let Err(e) = conn.execute(
+                "INSERT OR REPLACE INTO fact_relations (fact_id_1, fact_id_2, similarity) VALUES (?1, ?2, ?3)",
+                params![lo, hi, similarity as f64],
+            ) {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e.to_string());
+            }
+        }
+        conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// Get facts that don't have embeddings yet. Returns (id, fact_text).
     pub fn get_unembedded_facts(&self, user_id: u64) -> Result<Vec<(i64, String)>, String> {
         let conn = self.conn.lock().unwrap();

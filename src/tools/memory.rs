@@ -98,13 +98,10 @@ pub async fn memory_save(
                     let mut linked_facts = Vec::new();
                     for (related_id, sim) in top_links {
                         if db.link_facts(fact_id, *related_id, *sim).is_ok() {
-                            if let Ok(related) = db.get_related_facts(fact_id) {
-                                if let Some((_, text, _, _)) =
-                                    related.iter().find(|(id, _, _, _)| *id == *related_id)
-                                {
-                                    linked_facts
-                                        .push(format!("#{related_id} {text} ({sim:.2})"));
-                                }
+                            // Look up text from all_facts instead of extra DB query
+                            if let Some((_, text, _, _)) = all_facts.iter().find(|(id, _, _, _)| *id == *related_id) {
+                                linked_facts
+                                    .push(format!("#{related_id} {text} ({sim:.2})"));
                             }
                         }
                     }

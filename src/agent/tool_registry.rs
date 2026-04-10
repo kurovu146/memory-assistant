@@ -341,7 +341,7 @@ impl ToolRegistry {
                 } else {
                     match db.update_fact(kb_owner_id, id, new_fact) {
                         Ok(true) => {
-                            // Re-embed the edited fact
+                            // Re-embed and recompute relations
                             if let Some(client) = embedding_client {
                                 if let Ok(embeddings) =
                                     client.embed_batch(&[new_fact], "document").await
@@ -350,6 +350,24 @@ impl ToolRegistry {
                                         let blob =
                                             crate::tools::embedding::embedding_to_bytes(emb);
                                         let _ = db.update_fact_embedding(id, &blob);
+                                        // Delete old relations and recompute
+                                        let _ = db.delete_fact_relations(id);
+                                        if let Ok(all_facts) = db.load_all_fact_embeddings(kb_owner_id) {
+                                            let mut similarities: Vec<(i64, f32)> = all_facts
+                                                .iter()
+                                                .filter(|(fid, _, _, _)| *fid != id)
+                                                .map(|(fid, _, _, emb_blob)| {
+                                                    let other = crate::tools::embedding::bytes_to_embedding(emb_blob);
+                                                    let sim = crate::tools::embedding::cosine_similarity(emb, &other);
+                                                    (*fid, sim)
+                                                })
+                                                .filter(|(_, sim)| *sim > 0.75)
+                                                .collect();
+                                            similarities.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                                            for (related_id, sim) in similarities.iter().take(3) {
+                                                let _ = db.link_facts(id, *related_id, *sim);
+                                            }
+                                        }
                                     }
                                 }
                             }

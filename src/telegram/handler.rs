@@ -2032,8 +2032,8 @@ async fn migrate_fact_embeddings(state: &AppState) {
                     }
                 }
                 Err(e) => {
-                    error!("Fact embedding migration: Voyage API failed: {e}");
-                    return; // Stop migration if API fails
+                    error!("Fact embedding migration: Voyage API failed for user {user_id}: {e}");
+                    break; // Skip this user, continue with others
                 }
             }
             // Rate limit respect
@@ -2048,14 +2048,20 @@ async fn migrate_fact_embeddings(state: &AppState) {
                 .map(|(id, _, _, blob)| (*id, bytes_to_embedding(blob)))
                 .collect();
 
+            let mut links: Vec<(i64, i64, f32)> = Vec::new();
             for i in 0..embeddings.len() {
                 let (id_a, emb_a) = &embeddings[i];
                 for j in (i + 1)..embeddings.len() {
                     let (id_b, emb_b) = &embeddings[j];
                     let sim = cosine_similarity(emb_a, emb_b);
                     if sim > 0.75 {
-                        let _ = state.db.link_facts(*id_a, *id_b, sim);
+                        links.push((*id_a, *id_b, sim));
                     }
+                }
+            }
+            if !links.is_empty() {
+                if let Err(e) = state.db.link_facts_batch(&links) {
+                    error!("Fact embedding migration: failed to batch-link facts: {e}");
                 }
             }
         }
