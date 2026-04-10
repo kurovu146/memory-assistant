@@ -40,6 +40,11 @@ impl Database {
             "
         )?;
 
+        // Add embedding column to memory_facts (idempotent — .ok() ignores "duplicate column" error)
+        conn.execute_batch(
+            "ALTER TABLE memory_facts ADD COLUMN embedding BLOB;"
+        ).ok();
+
         // Knowledge documents table
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS knowledge_documents (
@@ -143,6 +148,22 @@ impl Database {
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(fact_id, doc_id)
             );"
+        )?;
+
+        // Fact-to-fact relations (semantic similarity links)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS fact_relations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fact_id_1 INTEGER NOT NULL REFERENCES memory_facts(id) ON DELETE CASCADE,
+                fact_id_2 INTEGER NOT NULL REFERENCES memory_facts(id) ON DELETE CASCADE,
+                similarity REAL NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(fact_id_1, fact_id_2),
+                CHECK(fact_id_1 < fact_id_2)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_fact_relations_1 ON fact_relations(fact_id_1);
+            CREATE INDEX IF NOT EXISTS idx_fact_relations_2 ON fact_relations(fact_id_2);"
         )?;
 
         // Pending approval queue (for non-whitelisted users' write requests in groups)
@@ -318,6 +339,101 @@ impl Database {
             )
             .map_err(|e| e.to_string())?;
         Ok(rows > 0)
+    }
+
+    // --- Fact Embeddings & Relations ---
+
+    pub fn update_fact_embedding(&self, fact_id: i64, embedding: &[u8]) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE memory_facts SET embedding = ?1 WHERE id = ?2",
+            params![embedding, fact_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Load all fact embeddings for a user (for cosine similarity search).
+    /// Returns (fact_id, fact_text, category, embedding_bytes).
+    pub fn load_all_fact_embeddings(
+        &self,
+        user_id: u64,
+    ) -> Result<Vec<(i64, String, String, Vec<u8>)>, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.prepare(
+            "SELECT id, fact, category, embedding FROM memory_facts
+             WHERE user_id = ?1 AND embedding IS NOT NULL"
+        )
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map(params![user_id as i64], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+            rows.collect()
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    /// Link two facts with a similarity score. Enforces fact_id_1 < fact_id_2.
+    pub fn link_facts(&self, id_a: i64, id_b: i64, similarity: f32) -> Result<(), String> {
+        let (lo, hi) = if id_a < id_b { (id_a, id_b) } else { (id_b, id_a) };
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO fact_relations (fact_id_1, fact_id_2, similarity) VALUES (?1, ?2, ?3)",
+            params![lo, hi, similarity as f64],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Get facts related to a given fact_id. Returns (related_fact_id, fact_text, category, similarity).
+    pub fn get_related_facts(&self, fact_id: i64) -> Result<Vec<(i64, String, String, f64)>, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.prepare(
+            "SELECT mf.id, mf.fact, mf.category, fr.similarity
+             FROM fact_relations fr
+             JOIN memory_facts mf ON mf.id = CASE
+                 WHEN fr.fact_id_1 = ?1 THEN fr.fact_id_2
+                 ELSE fr.fact_id_1
+             END
+             WHERE fr.fact_id_1 = ?1 OR fr.fact_id_2 = ?1
+             ORDER BY fr.similarity DESC"
+        )
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map(params![fact_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+            rows.collect()
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    /// Get facts that don't have embeddings yet. Returns (id, fact_text).
+    pub fn get_unembedded_facts(&self, user_id: u64) -> Result<Vec<(i64, String)>, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.prepare(
+            "SELECT id, fact FROM memory_facts WHERE user_id = ?1 AND embedding IS NULL"
+        )
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map(params![user_id as i64], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?;
+            rows.collect()
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    /// Get all user_ids that have facts (for migration across all users).
+    pub fn get_fact_user_ids(&self) -> Result<Vec<u64>, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.prepare("SELECT DISTINCT user_id FROM memory_facts")
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map([], |row| {
+                    let uid: i64 = row.get(0)?;
+                    Ok(uid as u64)
+                })?;
+                rows.collect()
+            })
+            .map_err(|e| e.to_string())
     }
 
     // --- Categories ---
