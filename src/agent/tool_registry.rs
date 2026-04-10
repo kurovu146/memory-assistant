@@ -323,11 +323,11 @@ impl ToolRegistry {
             "memory_save" => {
                 let fact = args["fact"].as_str().unwrap_or("");
                 let category = args["category"].as_str().unwrap_or("general");
-                tools::memory_save(db, kb_owner_id, fact, category).await
+                tools::memory_save(db, kb_owner_id, fact, category, embedding_client).await
             }
             "memory_search" => {
                 let keyword = args["keyword"].as_str().unwrap_or("");
-                tools::memory_search(db, kb_owner_id, keyword).await
+                tools::memory_search(db, kb_owner_id, keyword, embedding_client).await
             }
             "memory_list" => {
                 let category = args["category"].as_str();
@@ -340,7 +340,21 @@ impl ToolRegistry {
                     "Error: new_fact cannot be empty".into()
                 } else {
                     match db.update_fact(kb_owner_id, id, new_fact) {
-                        Ok(true) => format!("Updated memory #{id}: \"{new_fact}\""),
+                        Ok(true) => {
+                            // Re-embed the edited fact
+                            if let Some(client) = embedding_client {
+                                if let Ok(embeddings) =
+                                    client.embed_batch(&[new_fact], "document").await
+                                {
+                                    if let Some(emb) = embeddings.first() {
+                                        let blob =
+                                            crate::tools::embedding::embedding_to_bytes(emb);
+                                        let _ = db.update_fact_embedding(id, &blob);
+                                    }
+                                }
+                            }
+                            format!("Updated memory #{id}: \"{new_fact}\"")
+                        }
                         Ok(false) => format!("Memory #{id} not found."),
                         Err(e) => format!("Error: {e}"),
                     }
