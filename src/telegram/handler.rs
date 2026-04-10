@@ -554,6 +554,14 @@ Accuracy, consistency, and trust are more important than verbosity.");
         });
     }
 
+    // Migrate existing facts: embed + compute relations
+    {
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            migrate_fact_embeddings(&state_clone).await;
+        });
+    }
+
     info!(
         "Memory Assistant bot started. Allowed users: {:?}, Allowed groups: {:?}",
         config.allowed_users, config.allowed_groups
@@ -1166,7 +1174,7 @@ async fn run_agent_and_respond_inner(
                 history_text,
                 state.embedding_client.as_ref(),
             ),
-            crate::tools::memory_search(&state.db, kb_owner_id, history_text),
+            crate::tools::memory_search(&state.db, kb_owner_id, history_text, state.embedding_client.as_ref()),
         );
 
         let mut rag_ctx = String::new();
@@ -1977,4 +1985,81 @@ async fn migrate_unchunked_docs(state: &AppState) {
     }
 
     info!("Migration: completed chunking {} documents", docs.len());
+}
+
+/// Migrate existing facts that don't have embeddings yet, then compute relations.
+async fn migrate_fact_embeddings(state: &AppState) {
+    use crate::tools::embedding::{embedding_to_bytes, bytes_to_embedding, cosine_similarity};
+
+    let client = match &state.embedding_client {
+        Some(c) => c,
+        None => return, // No embedding client — skip migration
+    };
+
+    let user_ids = match state.db.get_fact_user_ids() {
+        Ok(ids) => ids,
+        Err(e) => {
+            error!("Fact embedding migration: failed to get user_ids: {e}");
+            return;
+        }
+    };
+
+    for user_id in user_ids {
+        let facts = match state.db.get_unembedded_facts(user_id) {
+            Ok(f) => f,
+            Err(e) => {
+                error!("Fact embedding migration: failed to get facts for user {user_id}: {e}");
+                continue;
+            }
+        };
+
+        if facts.is_empty() {
+            continue;
+        }
+
+        info!("Fact embedding migration: embedding {} facts for user {user_id}", facts.len());
+
+        // Batch embed (128 at a time)
+        for batch in facts.chunks(128) {
+            let texts: Vec<&str> = batch.iter().map(|(_, text)| text.as_str()).collect();
+            match client.embed_batch(&texts, "document").await {
+                Ok(embeddings) => {
+                    for ((fact_id, _), emb) in batch.iter().zip(embeddings.iter()) {
+                        let blob = embedding_to_bytes(emb);
+                        if let Err(e) = state.db.update_fact_embedding(*fact_id, &blob) {
+                            error!("Fact embedding migration: failed to save embedding for fact {fact_id}: {e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Fact embedding migration: Voyage API failed: {e}");
+                    return; // Stop migration if API fails
+                }
+            }
+            // Rate limit respect
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+
+        // After all facts embedded, compute relations
+        info!("Fact embedding migration: computing relations for user {user_id}");
+        if let Ok(all_facts) = state.db.load_all_fact_embeddings(user_id) {
+            let embeddings: Vec<(i64, Vec<f32>)> = all_facts
+                .iter()
+                .map(|(id, _, _, blob)| (*id, bytes_to_embedding(blob)))
+                .collect();
+
+            for i in 0..embeddings.len() {
+                let (id_a, emb_a) = &embeddings[i];
+                for j in (i + 1)..embeddings.len() {
+                    let (id_b, emb_b) = &embeddings[j];
+                    let sim = cosine_similarity(emb_a, emb_b);
+                    if sim > 0.75 {
+                        let _ = state.db.link_facts(*id_a, *id_b, sim);
+                    }
+                }
+            }
+        }
+
+        info!("Fact embedding migration: completed for user {user_id}");
+    }
 }
