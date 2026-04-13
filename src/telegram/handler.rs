@@ -1987,13 +1987,14 @@ async fn migrate_unchunked_docs(state: &AppState) {
     info!("Migration: completed chunking {} documents", docs.len());
 }
 
-/// Migrate existing facts that don't have embeddings yet, then compute relations.
+/// Migrate existing facts that don't have embeddings yet, then compute relations
+/// only for newly embedded facts.
 async fn migrate_fact_embeddings(state: &AppState) {
     use crate::tools::embedding::{embedding_to_bytes, bytes_to_embedding, cosine_similarity};
 
     let client = match &state.embedding_client {
         Some(c) => c,
-        None => return, // No embedding client — skip migration
+        None => return,
     };
 
     let user_ids = match state.db.get_fact_user_ids() {
@@ -2019,7 +2020,8 @@ async fn migrate_fact_embeddings(state: &AppState) {
 
         info!("Fact embedding migration: embedding {} facts for user {user_id}", facts.len());
 
-        // Batch embed (128 at a time)
+        let mut new_fact_ids: Vec<i64> = Vec::new();
+
         for batch in facts.chunks(128) {
             let texts: Vec<&str> = batch.iter().map(|(_, text)| text.as_str()).collect();
             match client.embed_batch(&texts, "document").await {
@@ -2028,41 +2030,65 @@ async fn migrate_fact_embeddings(state: &AppState) {
                         let blob = embedding_to_bytes(emb);
                         if let Err(e) = state.db.update_fact_embedding(*fact_id, &blob) {
                             error!("Fact embedding migration: failed to save embedding for fact {fact_id}: {e}");
+                        } else {
+                            new_fact_ids.push(*fact_id);
                         }
                     }
                 }
                 Err(e) => {
                     error!("Fact embedding migration: Voyage API failed for user {user_id}: {e}");
-                    break; // Skip this user, continue with others
+                    break;
                 }
             }
-            // Rate limit respect
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
 
-        // After all facts embedded, compute relations
-        info!("Fact embedding migration: computing relations for user {user_id}");
-        if let Ok(all_facts) = state.db.load_all_fact_embeddings(user_id) {
-            let embeddings: Vec<(i64, Vec<f32>)> = all_facts
-                .iter()
-                .map(|(id, _, _, blob)| (*id, bytes_to_embedding(blob)))
-                .collect();
+        // Only compute relations for newly embedded facts against existing ones
+        if new_fact_ids.is_empty() {
+            continue;
+        }
 
-            let mut links: Vec<(i64, i64, f32)> = Vec::new();
-            for i in 0..embeddings.len() {
-                let (id_a, emb_a) = &embeddings[i];
-                for j in (i + 1)..embeddings.len() {
-                    let (id_b, emb_b) = &embeddings[j];
-                    let sim = cosine_similarity(emb_a, emb_b);
+        info!(
+            "Fact embedding migration: computing relations for {} new facts (user {user_id})",
+            new_fact_ids.len()
+        );
+
+        let all_facts = match state.db.load_all_fact_embeddings(user_id) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+
+        let all_embeddings: Vec<(i64, Vec<f32>)> = all_facts
+            .iter()
+            .map(|(id, _, _, blob)| (*id, bytes_to_embedding(blob)))
+            .collect();
+
+        // Run O(new × total) cosine on blocking thread to avoid starving tokio
+        let links = tokio::task::spawn_blocking(move || {
+            let mut result: Vec<(i64, i64, f32)> = Vec::new();
+            for &new_id in &new_fact_ids {
+                let new_emb = match all_embeddings.iter().find(|(id, _)| *id == new_id) {
+                    Some((_, emb)) => emb,
+                    None => continue,
+                };
+                for (other_id, other_emb) in &all_embeddings {
+                    if *other_id >= new_id {
+                        continue;
+                    }
+                    let sim = cosine_similarity(new_emb, other_emb);
                     if sim > 0.75 {
-                        links.push((*id_a, *id_b, sim));
+                        result.push((*other_id, new_id, sim));
                     }
                 }
             }
-            if !links.is_empty() {
-                if let Err(e) = state.db.link_facts_batch(&links) {
-                    error!("Fact embedding migration: failed to batch-link facts: {e}");
-                }
+            result
+        })
+        .await
+        .unwrap_or_default();
+
+        if !links.is_empty() {
+            if let Err(e) = state.db.link_facts_batch(&links) {
+                error!("Fact embedding migration: failed to batch-link facts: {e}");
             }
         }
 
