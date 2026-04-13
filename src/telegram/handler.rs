@@ -2063,21 +2063,27 @@ async fn migrate_fact_embeddings(state: &AppState) {
             .map(|(id, _, _, blob)| (*id, bytes_to_embedding(blob)))
             .collect();
 
-        // Run O(new × total) cosine on blocking thread to avoid starving tokio
+        // Run cosine on blocking thread to avoid starving tokio
+        // Use HashMap for O(1) lookup instead of O(n) find
         let links = tokio::task::spawn_blocking(move || {
+            use std::collections::{HashMap, HashSet};
+            let new_set: HashSet<i64> = new_fact_ids.into_iter().collect();
+            let emb_map: HashMap<i64, &Vec<f32>> = all_embeddings.iter().map(|(id, e)| (*id, e)).collect();
+
             let mut result: Vec<(i64, i64, f32)> = Vec::new();
-            for &new_id in &new_fact_ids {
-                let new_emb = match all_embeddings.iter().find(|(id, _)| *id == new_id) {
-                    Some((_, emb)) => emb,
+            for &new_id in &new_set {
+                let new_emb = match emb_map.get(&new_id) {
+                    Some(emb) => *emb,
                     None => continue,
                 };
                 for (other_id, other_emb) in &all_embeddings {
-                    if *other_id >= new_id {
+                    if *other_id >= new_id || new_set.contains(other_id) && *other_id > new_id {
                         continue;
                     }
                     let sim = cosine_similarity(new_emb, other_emb);
                     if sim > 0.75 {
-                        result.push((*other_id, new_id, sim));
+                        let (lo, hi) = if *other_id < new_id { (*other_id, new_id) } else { (new_id, *other_id) };
+                        result.push((lo, hi, sim));
                     }
                 }
             }
