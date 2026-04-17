@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{info, warn};
 
 use super::claude::ClaudeProvider;
+use super::gemini::GeminiProvider;
 use super::model_registry::{self, ProviderType};
 use super::openai_compat::OpenAICompatProvider;
 use super::types::*;
@@ -36,6 +37,7 @@ impl KeyPool {
 pub struct ProviderPool {
     claude: ClaudeProvider,
     openai_compat: OpenAICompatProvider,
+    gemini: GeminiProvider,
     claude_keys: KeyPool,
     openai_key: Option<String>,
     gemini_key: Option<String>,
@@ -62,6 +64,7 @@ impl ProviderPool {
         Self {
             claude: ClaudeProvider::new(),
             openai_compat: OpenAICompatProvider::new(),
+            gemini: GeminiProvider::new(),
             claude_keys: KeyPool::new(claude_keys),
             openai_key,
             gemini_key,
@@ -115,12 +118,8 @@ impl ProviderPool {
                     .gemini_key
                     .as_deref()
                     .ok_or(ProviderError::NoKeys)?;
-                let base_url = "https://generativelanguage.googleapis.com/v1beta/openai";
                 info!("Trying Gemini: model={model}");
-                let response = self
-                    .openai_compat
-                    .chat(messages, tools, key, model, base_url)
-                    .await?;
+                let response = self.gemini.chat(messages, tools, key, model).await?;
                 let label = model_info.map(|m| m.label).unwrap_or("gemini");
                 info!("Gemini succeeded");
                 Ok((response, label.to_string()))

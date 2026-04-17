@@ -1,4 +1,5 @@
 pub mod claude;
+mod gemini;
 pub mod model_registry;
 mod openai_compat;
 mod pool;
