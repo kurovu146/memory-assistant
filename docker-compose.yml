@@ -1,0 +1,12 @@
+services:
+  memory-assistant:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: memory-assistant:latest
+    container_name: memory-assistant
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
